@@ -55,7 +55,7 @@ fn test_full_flow_init_add_agent_set_get() {
         .exists());
 
     vault
-        .set_secret("stripe/api-key", "sk_test_123", "stripe", None)
+        .set_secret("stripe/api-key", "sk_test_123", "stripe", None, None)
         .unwrap();
 
     let plaintext = vault
@@ -112,9 +112,9 @@ fn test_multiple_secrets() {
     let (_tmp, root) = setup_git_repo();
     let vault = Vault::init(&root).unwrap();
 
-    vault.set_secret("stripe/api-key", "sk_123", "stripe", None).unwrap();
-    vault.set_secret("stripe/webhook-secret", "whsec_456", "stripe", None).unwrap();
-    vault.set_secret("postgres/conn-string", "postgres://...", "postgres", None).unwrap();
+    vault.set_secret("stripe/api-key", "sk_123", "stripe", None, None).unwrap();
+    vault.set_secret("stripe/webhook-secret", "whsec_456", "stripe", None, None).unwrap();
+    vault.set_secret("postgres/conn-string", "postgres://...", "postgres", None, None).unwrap();
 
     assert_eq!(vault.list_secrets(None).unwrap().len(), 3);
     assert_eq!(vault.list_secrets(Some("stripe")).unwrap().len(), 2);
@@ -139,7 +139,7 @@ fn test_grant_enables_agent_access() {
     let vault = Vault::init(&root).unwrap();
 
     let agent_key = vault.add_agent("bot1").unwrap();
-    vault.set_secret("stripe/api-key", "sk_123", "stripe", None).unwrap();
+    vault.set_secret("stripe/api-key", "sk_123", "stripe", None, None).unwrap();
 
     // Before grant: agent can't decrypt
     assert!(vault.get_secret("stripe/api-key", &agent_key).is_err());
@@ -169,7 +169,7 @@ fn test_revoke_removes_agent_access() {
     let vault = Vault::init(&root).unwrap();
 
     let agent_key = vault.add_agent("bot1").unwrap();
-    vault.set_secret("stripe/api-key", "sk_123", "stripe", None).unwrap();
+    vault.set_secret("stripe/api-key", "sk_123", "stripe", None, None).unwrap();
     vault.grant_agent("bot1", "stripe").unwrap();
 
     // Agent can decrypt
@@ -199,7 +199,7 @@ fn test_grant_nonexistent_agent_fails() {
     let (_tmp, root) = setup_git_repo();
     let vault = Vault::init(&root).unwrap();
 
-    vault.set_secret("stripe/api-key", "sk_123", "stripe", None).unwrap();
+    vault.set_secret("stripe/api-key", "sk_123", "stripe", None, None).unwrap();
     assert!(vault.grant_agent("ghost", "stripe").is_err());
 }
 
@@ -221,7 +221,7 @@ fn test_multi_agent_grant_revoke() {
 
     let key1 = vault.add_agent("bot1").unwrap();
     let key2 = vault.add_agent("bot2").unwrap();
-    vault.set_secret("stripe/api-key", "sk_123", "stripe", None).unwrap();
+    vault.set_secret("stripe/api-key", "sk_123", "stripe", None, None).unwrap();
 
     // Grant both
     vault.grant_agent("bot1", "stripe").unwrap();
@@ -248,7 +248,7 @@ fn test_remove_agent() {
     let vault = Vault::init(&root).unwrap();
 
     let agent_key = vault.add_agent("bot1").unwrap();
-    vault.set_secret("stripe/api-key", "sk_123", "stripe", None).unwrap();
+    vault.set_secret("stripe/api-key", "sk_123", "stripe", None, None).unwrap();
     vault.grant_agent("bot1", "stripe").unwrap();
 
     // Agent can decrypt
@@ -296,7 +296,7 @@ fn test_restore_agent_from_escrow() {
     let vault = Vault::init(&root).unwrap();
 
     let original_key_path = vault.add_agent("bot1").unwrap();
-    vault.set_secret("stripe/api-key", "sk_123", "stripe", None).unwrap();
+    vault.set_secret("stripe/api-key", "sk_123", "stripe", None, None).unwrap();
     vault.grant_agent("bot1", "stripe").unwrap();
 
     // Read original key content
@@ -324,7 +324,7 @@ fn test_recover_agent_new_keypair() {
     let vault = Vault::init(&root).unwrap();
 
     let original_key_path = vault.add_agent("bot1").unwrap();
-    vault.set_secret("stripe/api-key", "sk_123", "stripe", None).unwrap();
+    vault.set_secret("stripe/api-key", "sk_123", "stripe", None, None).unwrap();
     vault.grant_agent("bot1", "stripe").unwrap();
 
     // Read original key
@@ -375,7 +375,7 @@ fn test_check_healthy_vault() {
     let vault = Vault::init(&root).unwrap();
 
     vault.add_agent("bot1").unwrap();
-    vault.set_secret("stripe/api-key", "sk_123", "stripe", None).unwrap();
+    vault.set_secret("stripe/api-key", "sk_123", "stripe", None, None).unwrap();
     vault.grant_agent("bot1", "stripe").unwrap();
 
     let issues = vault.check().unwrap();
@@ -401,4 +401,60 @@ fn test_check_agent_no_access() {
         _ => false,
     });
     assert!(has_no_access_warning);
+}
+
+// ---- --agents flag tests ----
+
+#[test]
+fn test_set_with_extra_agents() {
+    let _lock = HOME_LOCK.lock().unwrap();
+    let (_tmp, root) = setup_git_repo();
+    let vault = Vault::init(&root).unwrap();
+
+    let agent_key = vault.add_agent("bot1").unwrap();
+
+    // Set secret with extra_agents (no group grant needed)
+    vault
+        .set_secret(
+            "stripe/api-key",
+            "sk_123",
+            "stripe",
+            None,
+            Some(&["bot1".to_string()]),
+        )
+        .unwrap();
+
+    // Agent can decrypt even without group grant
+    let plaintext = vault.get_secret("stripe/api-key", &agent_key).unwrap();
+    assert_eq!(plaintext.expose_secret(), "sk_123");
+
+    // Owner can also decrypt
+    let owner_key = agent_vault::core::paths::owner_key_path();
+    assert_eq!(
+        vault
+            .get_secret("stripe/api-key", &owner_key)
+            .unwrap()
+            .expose_secret(),
+        "sk_123"
+    );
+
+    // Metadata lists the agent
+    let secrets = vault.list_secrets(None).unwrap();
+    assert!(secrets[0].authorized_agents.contains(&"bot1".to_string()));
+}
+
+#[test]
+fn test_set_with_nonexistent_extra_agent_fails() {
+    let _lock = HOME_LOCK.lock().unwrap();
+    let (_tmp, root) = setup_git_repo();
+    let vault = Vault::init(&root).unwrap();
+
+    let result = vault.set_secret(
+        "stripe/api-key",
+        "sk_123",
+        "stripe",
+        None,
+        Some(&["ghost".to_string()]),
+    );
+    assert!(result.is_err());
 }

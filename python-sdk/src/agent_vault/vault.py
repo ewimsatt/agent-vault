@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import logging
 import os
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -14,6 +17,50 @@ from agent_vault.errors import (
 )
 from agent_vault.manifest import Manifest
 from agent_vault.metadata import SecretMetadata
+
+logger = logging.getLogger("agent_vault")
+
+
+def _resolve_repo_path(repo_path: str | Path) -> Path:
+    """Resolve repo_path to a local directory.
+
+    If repo_path is a Git remote URL (https://, git@, ssh://, git://),
+    clones or updates a cached copy under ~/.agent-vault/cache/<hash>.
+    Otherwise returns the local path directly.
+    """
+    path_str = str(repo_path)
+
+    if not any(
+        path_str.startswith(prefix)
+        for prefix in ("https://", "git@", "ssh://", "git://")
+    ):
+        return Path(repo_path).expanduser().resolve()
+
+    # Compute stable cache directory from URL
+    url_hash = hashlib.sha256(path_str.encode()).hexdigest()[:16]
+    cache_dir = Path.home() / ".agent-vault" / "cache" / url_hash
+
+    try:
+        import git as gitmodule
+
+        if cache_dir.exists() and (cache_dir / ".git").exists():
+            try:
+                repo = gitmodule.Repo(str(cache_dir))
+                if repo.remotes:
+                    repo.remotes[0].pull(rebase=False)
+            except Exception as e:
+                logger.warning("git pull failed for cached repo: %s", e)
+                print(
+                    f"Warning: git pull failed for cached repo: {e}",
+                    file=sys.stderr,
+                )
+        else:
+            cache_dir.parent.mkdir(parents=True, exist_ok=True)
+            gitmodule.Repo.clone_from(path_str, str(cache_dir))
+    except Exception as e:
+        raise VaultNotFoundError(f"Failed to clone/update {path_str}: {e}") from e
+
+    return cache_dir
 
 
 class Vault:
@@ -38,14 +85,14 @@ class Vault:
         """Initialize the vault.
 
         Args:
-            repo_path: Path to the Git repository containing the vault.
+            repo_path: Path to the Git repository (local or remote URL).
             key_path: Path to the age private key file. If not provided,
                 falls back to AGENT_VAULT_KEY env var (as key string),
                 then ~/.agent-vault/owner.key.
             key_str: Raw age private key string. Overrides key_path.
             auto_pull: Whether to git pull before each get() call.
         """
-        self._repo_path = Path(repo_path).expanduser().resolve()
+        self._repo_path = _resolve_repo_path(repo_path)
         self._vault_dir = self._repo_path / ".agent-vault"
         self._auto_pull = auto_pull
 
@@ -85,9 +132,9 @@ class Vault:
             if repo.remotes:
                 origin = repo.remotes[0]
                 origin.pull(rebase=False)
-        except Exception:
-            # Best-effort: if no remote, offline, or merge conflict, skip
-            pass
+        except Exception as e:
+            logger.warning("git pull failed (continuing with local state): %s", e)
+            print(f"Warning: git pull failed: {e}", file=sys.stderr)
 
     def get(self, secret_path: str) -> str:
         """Retrieve and decrypt a secret.

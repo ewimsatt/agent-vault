@@ -313,3 +313,35 @@ fn test_cli_no_vault_errors() {
         .failure()
         .stderr(predicate::str::contains("vault not found"));
 }
+
+#[test]
+fn test_cli_set_with_agents_flag() {
+    let _lock = HOME_LOCK.lock().unwrap();
+    let (tmp, mut cmd) = setup();
+    cmd.arg("init").assert().success();
+
+    cmd_in(&tmp)
+        .args(["add-agent", "bot1"])
+        .assert()
+        .success();
+
+    cmd_in(&tmp)
+        .args(["set", "stripe/api-key", "sk_test", "--agents", "bot1"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("also encrypted for: bot1"));
+
+    let agent_key = tmp
+        .path()
+        .join("fakehome/.agent-vault/agents/bot1.key");
+    cmd_in(&tmp)
+        .args([
+            "get",
+            "stripe/api-key",
+            "--key",
+            agent_key.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("sk_test"));
+}

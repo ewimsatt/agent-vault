@@ -9,6 +9,7 @@ pub fn run_set(
     from_file: Option<&str>,
     group: Option<&str>,
     expires: Option<&str>,
+    agents: Option<Vec<String>>,
 ) -> anyhow::Result<()> {
     let secret_value = match (value, from_file) {
         (Some(v), None) => v.to_string(),
@@ -35,9 +36,13 @@ pub fn run_set(
 
     let root = std::env::current_dir()?;
     let vault = Vault::open(&root)?;
-    vault.set_secret(path, &secret_value, group, expires_dt)?;
+    vault.set_secret(path, &secret_value, group, expires_dt, agents.as_deref())?;
 
-    eprintln!("Secret '{path}' set in group '{group}'.");
+    if let Some(ref agent_list) = agents {
+        eprintln!("Secret '{path}' set in group '{group}' (also encrypted for: {}).", agent_list.join(", "));
+    } else {
+        eprintln!("Secret '{path}' set in group '{group}'.");
+    }
 
     Ok(())
 }

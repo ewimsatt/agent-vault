@@ -128,27 +128,41 @@ impl Vault {
     }
 
     /// Set (create or update) a secret.
+    /// `extra_agents` allows encrypting for specific agents beyond the group members.
     pub fn set_secret(
         &self,
         secret_path: &str,
         value: &str,
         group: &str,
         expires: Option<chrono::DateTime<chrono::Utc>>,
+        extra_agents: Option<&[String]>,
     ) -> Result<(), VaultError> {
         let mut manifest = Manifest::load(&self.paths.manifest_file())?;
 
         // Ensure group exists and secret is registered
         manifest.add_secret_to_group(group, secret_path);
 
-        // Collect recipients: owner + all authorized agents
+        // Collect authorized agents from group + extras
+        let mut all_agents = manifest.agents_in_group(group);
+        if let Some(extras) = extra_agents {
+            for agent_name in extras {
+                if !manifest.agents.iter().any(|a| a.name == *agent_name) {
+                    return Err(VaultError::AgentNotFound(agent_name.clone()));
+                }
+                if !all_agents.contains(agent_name) {
+                    all_agents.push(agent_name.clone());
+                }
+            }
+        }
+
+        // Collect recipients: owner + all agents
         let mut recipients = vec![];
 
         let owner_pub_str = keys::load_public_key(&self.paths.owner_pub_file())?;
         let owner_recipient = crypto::parse_recipient(&owner_pub_str)?;
         recipients.push(owner_recipient);
 
-        let authorized = manifest.agents_in_group(group);
-        for agent_name in &authorized {
+        for agent_name in &all_agents {
             let pub_path = self.paths.agent_pub_file(agent_name);
             if pub_path.exists() {
                 let pub_str = keys::load_public_key(&pub_path)?;
@@ -172,10 +186,10 @@ impl Vault {
         let mut meta = if meta_path.exists() {
             let mut existing = SecretMetadata::load(&meta_path)?;
             existing.rotated = chrono::Utc::now();
-            existing.authorized_agents = authorized.clone();
+            existing.authorized_agents = all_agents.clone();
             existing
         } else {
-            SecretMetadata::new(secret_path, group, authorized.clone())
+            SecretMetadata::new(secret_path, group, all_agents.clone())
         };
         if let Some(exp) = expires {
             meta.expires = Some(exp);

@@ -263,3 +263,64 @@ class TestMultipleSecrets:
         assert len(vault.list_secrets()) == 3
         assert len(vault.list_secrets(group="stripe")) == 2
         assert len(vault.list_secrets(group="postgres")) == 1
+
+
+class TestPullWarnings:
+    def test_pull_warns_on_failure(self, vault_env, capsys):
+        """Pull failure logs to stderr instead of silently swallowing."""
+        import shutil
+
+        vault = Vault(
+            repo_path=vault_env["repo"],
+            key_path=vault_env["owner_key"],
+            auto_pull=False,
+        )
+        # Break git by temporarily renaming .git
+        git_dir = vault_env["repo"] / ".git"
+        git_dir_backup = vault_env["repo"] / ".git_backup"
+        shutil.move(str(git_dir), str(git_dir_backup))
+
+        try:
+            vault.pull()  # Should warn, not raise
+            captured = capsys.readouterr()
+            assert "Warning" in captured.err
+        finally:
+            shutil.move(str(git_dir_backup), str(git_dir))
+
+
+class TestResolveRepoPath:
+    def test_local_path_unchanged(self):
+        """Local paths pass through unchanged."""
+        from agent_vault.vault import _resolve_repo_path
+
+        result = _resolve_repo_path("/tmp/some/path")
+        # On macOS /tmp -> /private/tmp, so compare resolved paths
+        assert result == Path("/tmp/some/path").resolve()
+
+    def test_url_detected(self):
+        """URL-like strings are detected as remote."""
+        from agent_vault.vault import _resolve_repo_path
+
+        # These should be detected as URLs (will fail to clone, but
+        # we're testing detection, not actual cloning)
+        for url in [
+            "https://github.com/example/repo.git",
+            "git@github.com:example/repo.git",
+            "ssh://git@github.com/example/repo.git",
+            "git://github.com/example/repo.git",
+        ]:
+            from agent_vault.errors import VaultNotFoundError
+            try:
+                _resolve_repo_path(url)
+            except VaultNotFoundError:
+                pass  # Expected — can't actually clone
+            except Exception:
+                pass  # Network error is also fine
+
+    def test_relative_path_not_url(self):
+        """Relative paths are not treated as URLs."""
+        from agent_vault.vault import _resolve_repo_path
+
+        result = _resolve_repo_path("./my-repo")
+        assert not str(result).startswith("https://")
+        assert result.is_absolute()

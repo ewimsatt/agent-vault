@@ -72,6 +72,10 @@ pub enum Commands {
         /// Expiration date (ISO 8601, e.g. 2026-12-31T00:00:00Z)
         #[arg(long)]
         expires: Option<String>,
+
+        /// Encrypt for specific agents (comma-separated, additive with group members)
+        #[arg(long, value_delimiter = ',')]
+        agents: Option<Vec<String>>,
     },
 
     /// Get (decrypt) a secret
@@ -125,7 +129,8 @@ pub fn dispatch(cli: Cli) -> anyhow::Result<()> {
             from_file,
             group,
             expires,
-        } => secret::run_set(&path, value.as_deref(), from_file.as_deref(), group.as_deref(), expires.as_deref()),
+            agents,
+        } => secret::run_set(&path, value.as_deref(), from_file.as_deref(), group.as_deref(), expires.as_deref(), agents),
         Commands::Get { path, key } => secret::run_get(&path, key.as_deref()),
         Commands::List { group } => secret::run_list(group.as_deref()),
         Commands::Check => check::run(),

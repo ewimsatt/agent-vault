@@ -13,15 +13,17 @@ pub fn gitignore_content() -> &'static str {
      !**/*.escrow\n"
 }
 
-/// Pre-commit hook script that blocks commits containing unencrypted age private keys.
+/// Pre-commit hook script that blocks commits containing unencrypted private key material.
 pub fn pre_commit_hook_script() -> &'static str {
     r#"#!/bin/sh
 # agent-vault pre-commit hook: block unencrypted private key material
+PATTERNS='AGE-SECRET-KEY-\|-----BEGIN PRIVATE KEY-----\|-----BEGIN RSA PRIVATE KEY-----\|-----BEGIN EC PRIVATE KEY-----\|-----BEGIN OPENSSH PRIVATE KEY-----'
+
 if git diff --cached --diff-filter=ACM -z --name-only | \
-   xargs -0 grep -l 'AGE-SECRET-KEY-' 2>/dev/null; then
+   xargs -0 grep -l "$PATTERNS" 2>/dev/null; then
     echo ""
     echo "ERROR: Commit blocked by agent-vault pre-commit hook."
-    echo "Staged files contain unencrypted age private key material."
+    echo "Staged files contain unencrypted private key material."
     echo "Remove the private key material before committing."
     exit 1
 fi
@@ -147,4 +149,19 @@ pub fn install_pre_commit_hook(repo: &Repository) -> Result<(), VaultError> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pre_commit_hook_contains_all_patterns() {
+        let script = pre_commit_hook_script();
+        assert!(script.contains("AGE-SECRET-KEY-"));
+        assert!(script.contains("BEGIN PRIVATE KEY"));
+        assert!(script.contains("BEGIN RSA PRIVATE KEY"));
+        assert!(script.contains("BEGIN EC PRIVATE KEY"));
+        assert!(script.contains("BEGIN OPENSSH PRIVATE KEY"));
+    }
 }
