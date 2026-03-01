@@ -76,6 +76,15 @@ pub fn commit_files(repo: &Repository, paths: &[PathBuf], message: &str) -> Resu
     Ok(())
 }
 
+/// Remove a directory from the git index by its relative path within the vault.
+/// `relative_path` should be relative to the repo root (e.g., ".agent-vault/agents/bot1").
+pub fn remove_dir_from_index(repo: &Repository, relative_path: &Path) -> Result<(), VaultError> {
+    let mut index = repo.index()?;
+    index.remove_dir(relative_path, 0)?;
+    index.write()?;
+    Ok(())
+}
+
 /// Install the pre-commit hook in the repository's hooks directory.
 pub fn install_pre_commit_hook(repo: &Repository) -> Result<(), VaultError> {
     let hooks_dir = repo.path().join("hooks");
