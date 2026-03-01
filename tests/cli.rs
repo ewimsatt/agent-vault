@@ -345,3 +345,133 @@ fn test_cli_set_with_agents_flag() {
         .success()
         .stdout(predicate::str::contains("sk_test"));
 }
+
+#[test]
+fn test_cli_init_with_directory() {
+    let _lock = HOME_LOCK.lock().unwrap();
+    let (tmp, _) = setup();
+
+    let subdir = tmp.path().join("nested");
+    fs::create_dir_all(&subdir).unwrap();
+    git2::Repository::init(&subdir).unwrap();
+
+    cmd_in(&tmp)
+        .args(["init", subdir.to_str().unwrap()])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Vault initialized"));
+
+    assert!(subdir.join(".agent-vault/config.yaml").exists());
+}
+
+#[test]
+fn test_cli_recover_agent() {
+    let _lock = HOME_LOCK.lock().unwrap();
+    let (tmp, mut cmd) = setup();
+    cmd.arg("init").assert().success();
+
+    cmd_in(&tmp)
+        .args(["add-agent", "bot1"])
+        .assert()
+        .success();
+
+    cmd_in(&tmp)
+        .args(["set", "stripe/api-key", "sk_123"])
+        .assert()
+        .success();
+
+    cmd_in(&tmp)
+        .args(["grant", "bot1", "stripe"])
+        .assert()
+        .success();
+
+    // Recover with new keypair
+    cmd_in(&tmp)
+        .args(["recover-agent", "bot1"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("recovered with new keypair"));
+
+    // Can still decrypt with new key
+    let agent_key = tmp
+        .path()
+        .join("fakehome/.agent-vault/agents/bot1.key");
+    cmd_in(&tmp)
+        .args([
+            "get",
+            "stripe/api-key",
+            "--key",
+            agent_key.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("sk_123"));
+}
+
+#[test]
+fn test_cli_list_json() {
+    let _lock = HOME_LOCK.lock().unwrap();
+    let (tmp, mut cmd) = setup();
+    cmd.arg("init").assert().success();
+
+    cmd_in(&tmp)
+        .args(["set", "stripe/api-key", "sk_123"])
+        .assert()
+        .success();
+
+    cmd_in(&tmp)
+        .args(["list", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"name\""))
+        .stdout(predicate::str::contains("stripe/api-key"));
+}
+
+#[test]
+fn test_cli_list_agents_json() {
+    let _lock = HOME_LOCK.lock().unwrap();
+    let (tmp, mut cmd) = setup();
+    cmd.arg("init").assert().success();
+
+    cmd_in(&tmp)
+        .args(["add-agent", "bot1"])
+        .assert()
+        .success();
+
+    cmd_in(&tmp)
+        .args(["list-agents", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"name\""))
+        .stdout(predicate::str::contains("bot1"));
+}
+
+#[test]
+fn test_cli_check_json() {
+    let _lock = HOME_LOCK.lock().unwrap();
+    let (tmp, mut cmd) = setup();
+    cmd.arg("init").assert().success();
+
+    cmd_in(&tmp)
+        .args(["add-agent", "bot1"])
+        .assert()
+        .success();
+
+    cmd_in(&tmp)
+        .args(["check", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"warnings\""))
+        .stdout(predicate::str::contains("bot1"));
+}
+
+#[test]
+fn test_cli_completions() {
+    let _lock = HOME_LOCK.lock().unwrap();
+    Command::cargo_bin("agent-vault")
+        .unwrap()
+        .args(["completions", "bash"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("agent-vault"));
+}

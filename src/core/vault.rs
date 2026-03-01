@@ -604,6 +604,9 @@ impl Vault {
 
     /// Resolve the identity key to use for decryption.
     /// Priority: --key flag > AGENT_VAULT_KEY env > ~/.agent-vault/owner.key
+    ///
+    /// AGENT_VAULT_KEY supports both file paths and raw key strings
+    /// (starting with `AGE-SECRET-KEY-`).
     pub fn resolve_identity_key(key_flag: Option<&str>) -> Result<PathBuf, VaultError> {
         if let Some(k) = key_flag {
             let p = PathBuf::from(k);
@@ -614,7 +617,24 @@ impl Vault {
         }
 
         if let Ok(env_key) = std::env::var("AGENT_VAULT_KEY") {
-            let p = PathBuf::from(env_key);
+            if env_key.contains("AGE-SECRET-KEY-") {
+                // Raw key string — write to a temp file in the home vault dir
+                let key_dir = paths::home_vault_dir();
+                std::fs::create_dir_all(&key_dir)?;
+                let tmp_key_path = key_dir.join(".env-key.tmp");
+                std::fs::write(&tmp_key_path, &env_key)?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(
+                        &tmp_key_path,
+                        std::fs::Permissions::from_mode(0o600),
+                    )?;
+                }
+                return Ok(tmp_key_path);
+            }
+
+            let p = PathBuf::from(&env_key);
             if p.exists() {
                 return Ok(p);
             }

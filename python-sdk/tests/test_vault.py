@@ -324,3 +324,14 @@ class TestResolveRepoPath:
         result = _resolve_repo_path("./my-repo")
         assert not str(result).startswith("https://")
         assert result.is_absolute()
+
+
+class TestContextManager:
+    def test_with_statement(self, vault_env):
+        """Vault works as a context manager."""
+        with Vault(
+            repo_path=vault_env["repo"],
+            key_path=vault_env["owner_key"],
+            auto_pull=False,
+        ) as vault:
+            assert vault.get("stripe/api-key") == "sk_test_123"

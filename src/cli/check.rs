@@ -1,9 +1,29 @@
 use crate::core::vault::{CheckIssue, Vault};
 
-pub fn run() -> anyhow::Result<()> {
+pub fn run(json: bool) -> anyhow::Result<()> {
     let root = std::env::current_dir()?;
     let vault = Vault::open(&root)?;
     let issues = vault.check()?;
+
+    if json {
+        let mut errors = vec![];
+        let mut warnings = vec![];
+        for issue in &issues {
+            match issue {
+                CheckIssue::Error(msg) => errors.push(msg.as_str()),
+                CheckIssue::Warning(msg) => warnings.push(msg.as_str()),
+            }
+        }
+        let data = serde_json::json!({
+            "errors": errors,
+            "warnings": warnings,
+        });
+        println!("{}", serde_json::to_string_pretty(&data)?);
+        if !errors.is_empty() {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
 
     if issues.is_empty() {
         println!("No issues found. Vault is healthy.");

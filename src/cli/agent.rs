@@ -31,10 +31,24 @@ pub fn run_remove(name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn run_list() -> anyhow::Result<()> {
+pub fn run_list(json: bool) -> anyhow::Result<()> {
     let root = std::env::current_dir()?;
     let vault = Vault::open(&root)?;
     let agents = vault.list_agents()?;
+
+    if json {
+        let data: Vec<serde_json::Value> = agents
+            .iter()
+            .map(|(name, groups)| {
+                serde_json::json!({
+                    "name": name,
+                    "groups": groups,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&data)?);
+        return Ok(());
+    }
 
     if agents.is_empty() {
         println!("No agents configured.");

@@ -62,10 +62,28 @@ pub fn run_get(path: &str, key: Option<&str>) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn run_list(group: Option<&str>) -> anyhow::Result<()> {
+pub fn run_list(group: Option<&str>, json: bool) -> anyhow::Result<()> {
     let root = std::env::current_dir()?;
     let vault = Vault::open(&root)?;
     let secrets = vault.list_secrets(group)?;
+
+    if json {
+        let data: Vec<serde_json::Value> = secrets
+            .iter()
+            .map(|meta| {
+                serde_json::json!({
+                    "name": meta.name,
+                    "group": meta.group,
+                    "authorized_agents": meta.authorized_agents,
+                    "created": meta.created.to_rfc3339(),
+                    "rotated": meta.rotated.to_rfc3339(),
+                    "expires": meta.expires.map(|e| e.to_rfc3339()),
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&data)?);
+        return Ok(());
+    }
 
     if secrets.is_empty() {
         println!("No secrets found.");

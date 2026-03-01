@@ -35,7 +35,11 @@ pub enum Commands {
     },
 
     /// List all agents in the vault
-    ListAgents,
+    ListAgents {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 
     /// Grant an agent access to a group
     Grant {
@@ -93,10 +97,18 @@ pub enum Commands {
         /// Filter by group
         #[arg(long)]
         group: Option<String>,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
 
     /// Audit the vault for issues
-    Check,
+    Check {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 
     /// Recover an agent (generate new keypair, re-encrypt secrets)
     RecoverAgent {
@@ -113,6 +125,12 @@ pub enum Commands {
         #[arg(long = "to")]
         to_path: String,
     },
+
+    /// Generate shell completions
+    Completions {
+        /// Shell to generate completions for
+        shell: clap_complete::Shell,
+    },
 }
 
 pub fn dispatch(cli: Cli) -> anyhow::Result<()> {
@@ -120,7 +138,7 @@ pub fn dispatch(cli: Cli) -> anyhow::Result<()> {
         Commands::Init { directory } => init::run(directory),
         Commands::AddAgent { name } => agent::run_add(&name),
         Commands::RemoveAgent { name } => agent::run_remove(&name),
-        Commands::ListAgents => agent::run_list(),
+        Commands::ListAgents { json } => agent::run_list(json),
         Commands::Grant { agent, group } => access::run_grant(&agent, &group),
         Commands::Revoke { agent, group } => access::run_revoke(&agent, &group),
         Commands::Set {
@@ -132,9 +150,14 @@ pub fn dispatch(cli: Cli) -> anyhow::Result<()> {
             agents,
         } => secret::run_set(&path, value.as_deref(), from_file.as_deref(), group.as_deref(), expires.as_deref(), agents),
         Commands::Get { path, key } => secret::run_get(&path, key.as_deref()),
-        Commands::List { group } => secret::run_list(group.as_deref()),
-        Commands::Check => check::run(),
+        Commands::List { group, json } => secret::run_list(group.as_deref(), json),
+        Commands::Check { json } => check::run(json),
         Commands::RecoverAgent { name } => recovery::run_recover(&name),
         Commands::RestoreAgent { name, to_path } => recovery::run_restore(&name, &to_path),
+        Commands::Completions { shell } => {
+            let mut cmd = <Cli as clap::CommandFactory>::command();
+            clap_complete::generate(shell, &mut cmd, "agent-vault", &mut std::io::stdout());
+            Ok(())
+        }
     }
 }

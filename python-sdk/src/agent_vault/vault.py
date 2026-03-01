@@ -209,6 +209,12 @@ class Vault:
         """Reload the manifest from disk (e.g. after a pull)."""
         self._manifest = Manifest.load(self._vault_dir / "manifest.yaml")
 
+    def __enter__(self) -> "Vault":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+        return False
+
 
 def _to_file_path(secret_path: str, suffix: str) -> Path:
     """Convert a secret path like "stripe/api-key" to a file path.
