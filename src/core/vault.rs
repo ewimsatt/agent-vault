@@ -133,6 +133,7 @@ impl Vault {
         secret_path: &str,
         value: &str,
         group: &str,
+        expires: Option<chrono::DateTime<chrono::Utc>>,
     ) -> Result<(), VaultError> {
         let mut manifest = Manifest::load(&self.paths.manifest_file())?;
 
@@ -168,7 +169,7 @@ impl Vault {
 
         // Write .meta file (preserve created timestamp on update)
         let meta_path = self.paths.secret_meta_file(secret_path);
-        let meta = if meta_path.exists() {
+        let mut meta = if meta_path.exists() {
             let mut existing = SecretMetadata::load(&meta_path)?;
             existing.rotated = chrono::Utc::now();
             existing.authorized_agents = authorized.clone();
@@ -176,6 +177,9 @@ impl Vault {
         } else {
             SecretMetadata::new(secret_path, group, authorized.clone())
         };
+        if let Some(exp) = expires {
+            meta.expires = Some(exp);
+        }
         meta.save(&meta_path)?;
 
         // Save updated manifest

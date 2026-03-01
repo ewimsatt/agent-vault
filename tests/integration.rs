@@ -55,7 +55,7 @@ fn test_full_flow_init_add_agent_set_get() {
         .exists());
 
     vault
-        .set_secret("stripe/api-key", "sk_test_123", "stripe")
+        .set_secret("stripe/api-key", "sk_test_123", "stripe", None)
         .unwrap();
 
     let plaintext = vault
@@ -112,9 +112,9 @@ fn test_multiple_secrets() {
     let (_tmp, root) = setup_git_repo();
     let vault = Vault::init(&root).unwrap();
 
-    vault.set_secret("stripe/api-key", "sk_123", "stripe").unwrap();
-    vault.set_secret("stripe/webhook-secret", "whsec_456", "stripe").unwrap();
-    vault.set_secret("postgres/conn-string", "postgres://...", "postgres").unwrap();
+    vault.set_secret("stripe/api-key", "sk_123", "stripe", None).unwrap();
+    vault.set_secret("stripe/webhook-secret", "whsec_456", "stripe", None).unwrap();
+    vault.set_secret("postgres/conn-string", "postgres://...", "postgres", None).unwrap();
 
     assert_eq!(vault.list_secrets(None).unwrap().len(), 3);
     assert_eq!(vault.list_secrets(Some("stripe")).unwrap().len(), 2);
@@ -139,7 +139,7 @@ fn test_grant_enables_agent_access() {
     let vault = Vault::init(&root).unwrap();
 
     let agent_key = vault.add_agent("bot1").unwrap();
-    vault.set_secret("stripe/api-key", "sk_123", "stripe").unwrap();
+    vault.set_secret("stripe/api-key", "sk_123", "stripe", None).unwrap();
 
     // Before grant: agent can't decrypt
     assert!(vault.get_secret("stripe/api-key", &agent_key).is_err());
@@ -169,7 +169,7 @@ fn test_revoke_removes_agent_access() {
     let vault = Vault::init(&root).unwrap();
 
     let agent_key = vault.add_agent("bot1").unwrap();
-    vault.set_secret("stripe/api-key", "sk_123", "stripe").unwrap();
+    vault.set_secret("stripe/api-key", "sk_123", "stripe", None).unwrap();
     vault.grant_agent("bot1", "stripe").unwrap();
 
     // Agent can decrypt
@@ -199,7 +199,7 @@ fn test_grant_nonexistent_agent_fails() {
     let (_tmp, root) = setup_git_repo();
     let vault = Vault::init(&root).unwrap();
 
-    vault.set_secret("stripe/api-key", "sk_123", "stripe").unwrap();
+    vault.set_secret("stripe/api-key", "sk_123", "stripe", None).unwrap();
     assert!(vault.grant_agent("ghost", "stripe").is_err());
 }
 
@@ -221,7 +221,7 @@ fn test_multi_agent_grant_revoke() {
 
     let key1 = vault.add_agent("bot1").unwrap();
     let key2 = vault.add_agent("bot2").unwrap();
-    vault.set_secret("stripe/api-key", "sk_123", "stripe").unwrap();
+    vault.set_secret("stripe/api-key", "sk_123", "stripe", None).unwrap();
 
     // Grant both
     vault.grant_agent("bot1", "stripe").unwrap();
@@ -248,7 +248,7 @@ fn test_remove_agent() {
     let vault = Vault::init(&root).unwrap();
 
     let agent_key = vault.add_agent("bot1").unwrap();
-    vault.set_secret("stripe/api-key", "sk_123", "stripe").unwrap();
+    vault.set_secret("stripe/api-key", "sk_123", "stripe", None).unwrap();
     vault.grant_agent("bot1", "stripe").unwrap();
 
     // Agent can decrypt
@@ -296,7 +296,7 @@ fn test_restore_agent_from_escrow() {
     let vault = Vault::init(&root).unwrap();
 
     let original_key_path = vault.add_agent("bot1").unwrap();
-    vault.set_secret("stripe/api-key", "sk_123", "stripe").unwrap();
+    vault.set_secret("stripe/api-key", "sk_123", "stripe", None).unwrap();
     vault.grant_agent("bot1", "stripe").unwrap();
 
     // Read original key content
@@ -324,7 +324,7 @@ fn test_recover_agent_new_keypair() {
     let vault = Vault::init(&root).unwrap();
 
     let original_key_path = vault.add_agent("bot1").unwrap();
-    vault.set_secret("stripe/api-key", "sk_123", "stripe").unwrap();
+    vault.set_secret("stripe/api-key", "sk_123", "stripe", None).unwrap();
     vault.grant_agent("bot1", "stripe").unwrap();
 
     // Read original key
@@ -375,7 +375,7 @@ fn test_check_healthy_vault() {
     let vault = Vault::init(&root).unwrap();
 
     vault.add_agent("bot1").unwrap();
-    vault.set_secret("stripe/api-key", "sk_123", "stripe").unwrap();
+    vault.set_secret("stripe/api-key", "sk_123", "stripe", None).unwrap();
     vault.grant_agent("bot1", "stripe").unwrap();
 
     let issues = vault.check().unwrap();
