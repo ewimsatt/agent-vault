@@ -21,17 +21,16 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: Security :: Cryptography",
 ]
-
-[project.urls]
-Homepage = "https://github.com/ewimsatt/agent-vault"
-Repository = "https://github.com/ewimsatt/agent-vault"
-Issues = "https://github.com/ewimsatt/agent-vault/issues"
-
 dependencies = [
     "pyrage>=1.2.0",
     "pyyaml>=6.0",
     "gitpython>=3.1",
 ]
+
+[project.urls]
+Homepage = "https://github.com/ewimsatt/agent-vault"
+Repository = "https://github.com/ewimsatt/agent-vault"
+Issues = "https://github.com/ewimsatt/agent-vault/issues"
 
 [project.optional-dependencies]
 mcp = ["mcp>=1.2.0"]
