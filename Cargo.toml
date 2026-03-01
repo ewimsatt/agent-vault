@@ -3,6 +3,12 @@ name = "agent-vault"
 version = "0.1.0"
 edition = "2021"
 description = "Zero-trust credential manager for AI agents"
+license = "MIT"
+repository = "https://github.com/ewimsatt/agent-vault"
+homepage = "https://github.com/ewimsatt/agent-vault"
+keywords = ["security", "encryption", "credentials", "ai-agents", "age"]
+categories = ["command-line-utilities", "cryptography"]
+readme = "README.md"
 
 [[bin]]
 name = "agent-vault"

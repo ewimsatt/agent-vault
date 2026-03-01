@@ -10,6 +10,22 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [{name = "agent-vault contributors"}]
+keywords = ["security", "encryption", "credentials", "ai-agents", "age", "mcp"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security :: Cryptography",
+]
+
+[project.urls]
+Homepage = "https://github.com/ewimsatt/agent-vault"
+Repository = "https://github.com/ewimsatt/agent-vault"
+Issues = "https://github.com/ewimsatt/agent-vault/issues"
 
 dependencies = [
     "pyrage>=1.2.0",
