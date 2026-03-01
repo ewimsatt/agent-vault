@@ -1,1 +1,9 @@
 /target
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+.eggs/
+*.so
+.pytest_cache/

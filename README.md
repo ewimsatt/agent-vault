@@ -71,3 +71,34 @@ The `get` command resolves identity keys in this order:
 1. `--key <path>` flag
 2. `AGENT_VAULT_KEY` environment variable
 3. `~/.agent-vault/owner.key` (default)
+
+## Python SDK
+
+Read-only SDK for agents to retrieve secrets programmatically.
+
+```bash
+pip install agent-vault
+```
+
+```python
+from agent_vault import Vault
+
+vault = Vault(
+    repo_path="/path/to/vault",
+    key_path="~/.agent-vault/agents/my-agent.key",
+)
+api_key = vault.get("stripe/api-key")
+```
+
+See [python-sdk/README.md](python-sdk/README.md) for full docs.
+
+## MCP Server
+
+Stdio-based MCP server so any MCP-compatible agent can request credentials through the standard tool-use protocol. The server holds the agent's private key in memory — the agent process never touches key material directly.
+
+```bash
+pip install 'agent-vault[mcp]'
+agent-vault-mcp --repo /path/to/vault --key ~/.agent-vault/agents/my-agent.key
+```
+
+Exposes `agent_vault_get` and `agent_vault_list` tools. See [python-sdk/README.md](python-sdk/README.md) for Claude Desktop configuration.
