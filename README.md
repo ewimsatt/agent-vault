@@ -1,10 +1,7 @@
 # agent-vault
 
-[![CI](https://github.com/ewimsatt/agent-vault/actions/workflows/ci.yml/badge.svg)](https://github.com/ewimsatt/agent-vault/actions/workflows/ci.yml)
+[![CI](https://github.com/ewimsatt/agent-vault/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ewimsatt/agent-vault/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Crates.io](https://img.shields.io/crates/v/agent-vault.svg)](https://crates.io/crates/agent-vault)
-[![PyPI](https://img.shields.io/pypi/v/agent-vault.svg)](https://pypi.org/project/agent-vault/)
-[![npm](https://img.shields.io/npm/v/agent-vault.svg)](https://www.npmjs.com/package/agent-vault)
 
 **Zero-trust credential manager for AI agents.**
 
