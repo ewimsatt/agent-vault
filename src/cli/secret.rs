@@ -35,6 +35,9 @@ pub fn run_get(path: &str, key: Option<&str>) -> anyhow::Result<()> {
     let root = std::env::current_dir()?;
     let vault = Vault::open(&root)?;
 
+    // Pull latest before decrypting
+    vault.pull()?;
+
     let key_path = Vault::resolve_identity_key(key)?;
     let plaintext = vault.get_secret(path, &key_path)?;
 

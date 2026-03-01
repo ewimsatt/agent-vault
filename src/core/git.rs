@@ -76,6 +76,40 @@ pub fn commit_files(repo: &Repository, paths: &[PathBuf], message: &str) -> Resu
     Ok(())
 }
 
+/// Pull latest from the remote (if one exists). Best-effort; silently skips if no remote.
+pub fn pull(repo: &Repository) -> Result<(), VaultError> {
+    // Only pull if there's a remote named "origin"
+    let remote = match repo.find_remote("origin") {
+        Ok(r) => r,
+        Err(_) => return Ok(()), // no remote, skip
+    };
+    let remote_name = remote.name().unwrap_or("origin").to_string();
+    drop(remote);
+
+    // Fetch
+    let mut remote = repo.find_remote(&remote_name)?;
+    remote.fetch(&[] as &[&str], None, None)?;
+
+    // Try to fast-forward merge the current branch
+    let fetch_head = match repo.find_reference("FETCH_HEAD") {
+        Ok(r) => r,
+        Err(_) => return Ok(()), // no FETCH_HEAD (empty remote)
+    };
+    let fetch_commit = repo.reference_to_annotated_commit(&fetch_head)?;
+
+    let (analysis, _) = repo.merge_analysis(&[&fetch_commit])?;
+    if analysis.is_fast_forward() {
+        if let Ok(mut head_ref) = repo.head() {
+            let msg = format!("Fast-forward to {}", fetch_commit.id());
+            head_ref.set_target(fetch_commit.id(), &msg)?;
+            repo.checkout_head(Some(git2::build::CheckoutBuilder::default().force()))?;
+        }
+    }
+    // If not fast-forward or up-to-date, do nothing (don't attempt merge)
+
+    Ok(())
+}
+
 /// Remove a directory from the git index by its relative path within the vault.
 /// `relative_path` should be relative to the repo root (e.g., ".agent-vault/agents/bot1").
 pub fn remove_dir_from_index(repo: &Repository, relative_path: &Path) -> Result<(), VaultError> {

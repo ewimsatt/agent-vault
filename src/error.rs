@@ -20,17 +20,8 @@ pub enum VaultError {
     #[error("group '{0}' not found in manifest")]
     GroupNotFound(String),
 
-    #[error("owner key not found — checked {0}")]
-    OwnerKeyNotFound(String),
-
     #[error("no identity key found — use --key or set AGENT_VAULT_KEY")]
     NoIdentityKey,
-
-    #[error("decryption failed — key may not be authorized for this secret")]
-    DecryptionFailed,
-
-    #[error("not yet implemented: {0}")]
-    NotImplemented(String),
 
     #[error(transparent)]
     Io(#[from] std::io::Error),

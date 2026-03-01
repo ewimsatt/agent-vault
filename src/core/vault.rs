@@ -166,9 +166,16 @@ impl Vault {
         }
         std::fs::write(&enc_path, &ciphertext)?;
 
-        // Write .meta file
-        let meta = SecretMetadata::new(secret_path, group, authorized.clone());
+        // Write .meta file (preserve created timestamp on update)
         let meta_path = self.paths.secret_meta_file(secret_path);
+        let meta = if meta_path.exists() {
+            let mut existing = SecretMetadata::load(&meta_path)?;
+            existing.rotated = chrono::Utc::now();
+            existing.authorized_agents = authorized.clone();
+            existing
+        } else {
+            SecretMetadata::new(secret_path, group, authorized.clone())
+        };
         meta.save(&meta_path)?;
 
         // Save updated manifest
@@ -184,6 +191,12 @@ impl Vault {
         )?;
 
         Ok(())
+    }
+
+    /// Pull latest from git (best-effort, silently skips if no remote).
+    pub fn pull(&self) -> Result<(), VaultError> {
+        let repo = git::open_repo(self.paths.root())?;
+        git::pull(&repo)
     }
 
     /// Get (decrypt) a secret using the provided identity key.
@@ -451,6 +464,11 @@ impl Vault {
     pub fn check(&self) -> Result<Vec<CheckIssue>, VaultError> {
         let manifest = Manifest::load(&self.paths.manifest_file())?;
         let mut issues = vec![];
+
+        // Verify config is valid
+        if let Err(e) = Config::load(&self.paths.config_file()) {
+            issues.push(CheckIssue::Error(format!("Invalid config.yaml: {e}")));
+        }
 
         // Check for agents with no group access
         for agent in &manifest.agents {
