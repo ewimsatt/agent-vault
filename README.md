@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/ewimsatt/agent-vault/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ewimsatt/agent-vault/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/agent-vault.svg)](https://crates.io/crates/agent-vault)
+[![PyPI](https://img.shields.io/pypi/v/agent-vault-sdk.svg)](https://pypi.org/project/agent-vault-sdk/)
 [![npm](https://img.shields.io/npm/v/@ewimsatt/agent-vault.svg)](https://www.npmjs.com/package/@ewimsatt/agent-vault)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
@@ -172,7 +173,7 @@ The `get` command resolves identity keys in this order:
 Read-only SDK for agents to retrieve secrets programmatically. Uses [pyrage](https://pypi.org/project/pyrage/) for age decryption.
 
 ```bash
-pip install agent-vault
+pip install agent-vault-sdk
 ```
 
 ```python
@@ -348,7 +349,7 @@ agent-vault get stripe/api-key
 
 ```dockerfile
 FROM python:3.12-slim
-RUN pip install agent-vault
+RUN pip install agent-vault-sdk
 COPY . /app
 WORKDIR /app
 CMD ["python", "agent.py"]
@@ -377,7 +378,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: pip install agent-vault
+      - run: pip install agent-vault-sdk
       - run: |
           SECRET=$(python -c "
             from agent_vault import Vault
