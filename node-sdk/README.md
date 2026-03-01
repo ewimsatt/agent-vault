@@ -7,7 +7,7 @@ Secrets are encrypted locally using [age encryption](https://age-encryption.org/
 ## Installation
 
 ```bash
-npm install agent-vault
+npm install @ewimsatt/agent-vault
 ```
 
 Requires Node.js 20 or later.
@@ -15,7 +15,7 @@ Requires Node.js 20 or later.
 ## Quick Start
 
 ```typescript
-import { Vault } from "agent-vault";
+import { Vault } from "@ewimsatt/agent-vault";
 
 const vault = new Vault({
   repoPath: "/path/to/repo",
@@ -76,7 +76,7 @@ import {
   SecretNotFoundError, // Secret path does not exist
   NotAuthorizedError,  // Key cannot decrypt the secret
   ManifestError,       // Manifest parsing failure
-} from "agent-vault";
+} from "@ewimsatt/agent-vault";
 ```
 
 ## Environment Variables

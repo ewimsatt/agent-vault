@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/ewimsatt/agent-vault/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ewimsatt/agent-vault/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/agent-vault.svg)](https://crates.io/crates/agent-vault)
+[![npm](https://img.shields.io/npm/v/@ewimsatt/agent-vault.svg)](https://www.npmjs.com/package/@ewimsatt/agent-vault)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 **Zero-trust credential manager for AI agents.**
@@ -205,11 +206,11 @@ vault = Vault(repo_path="https://github.com/myorg/secrets.git")
 Read-only SDK using the [age-encryption](https://www.npmjs.com/package/age-encryption) package.
 
 ```bash
-npm install agent-vault
+npm install @ewimsatt/agent-vault
 ```
 
 ```typescript
-import { Vault } from "agent-vault";
+import { Vault } from "@ewimsatt/agent-vault";
 
 const vault = new Vault({
   repoPath: "/path/to/vault",
@@ -312,7 +313,7 @@ api_key = vault.get("stripe/api-key")
 
 **TypeScript:**
 ```typescript
-import { Vault } from "agent-vault";
+import { Vault } from "@ewimsatt/agent-vault";
 const vault = new Vault({ repoPath: "/path/to/vault" });
 const apiKey = await vault.get("stripe/api-key");
 ```

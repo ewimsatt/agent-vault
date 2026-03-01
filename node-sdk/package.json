@@ -1,5 +1,5 @@
 {
-  "name": "agent-vault",
+  "name": "@ewimsatt/agent-vault",
   "version": "0.1.0",
   "description": "Zero-trust credential manager for AI agents — Node.js SDK",
   "license": "MIT",
