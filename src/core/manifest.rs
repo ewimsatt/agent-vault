@@ -2,7 +2,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::VaultError;
+use crate::{core::identifiers, error::VaultError};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Manifest {
@@ -51,6 +51,7 @@ impl Manifest {
     pub fn load(path: &Path) -> Result<Self, VaultError> {
         let contents = std::fs::read_to_string(path)?;
         let manifest: Manifest = serde_yaml::from_str(&contents)?;
+        manifest.validate()?;
         Ok(manifest)
     }
 
@@ -62,6 +63,7 @@ impl Manifest {
 
     /// Add an agent with no group access.
     pub fn add_agent(&mut self, name: &str) -> Result<(), VaultError> {
+        identifiers::validate_agent(name)?;
         if self.agents.iter().any(|a| a.name == name) {
             return Err(VaultError::AgentExists(name.to_string()));
         }
@@ -74,6 +76,7 @@ impl Manifest {
 
     /// Remove an agent, returning the groups they belonged to.
     pub fn remove_agent(&mut self, name: &str) -> Result<Vec<String>, VaultError> {
+        identifiers::validate_agent(name)?;
         let idx = self
             .agents
             .iter()
@@ -85,6 +88,8 @@ impl Manifest {
 
     /// Grant an agent access to a group.
     pub fn grant(&mut self, agent_name: &str, group_name: &str) -> Result<(), VaultError> {
+        identifiers::validate_agent(agent_name)?;
+        identifiers::validate_group(group_name)?;
         // Ensure group exists
         if !self.groups.iter().any(|g| g.name == group_name) {
             return Err(VaultError::GroupNotFound(group_name.to_string()));
@@ -102,6 +107,8 @@ impl Manifest {
 
     /// Revoke an agent's access to a group.
     pub fn revoke(&mut self, agent_name: &str, group_name: &str) -> Result<(), VaultError> {
+        identifiers::validate_agent(agent_name)?;
+        identifiers::validate_group(group_name)?;
         let agent = self
             .agents
             .iter_mut()
@@ -112,22 +119,51 @@ impl Manifest {
     }
 
     /// Ensure a group exists, creating it if necessary.
-    pub fn ensure_group(&mut self, group_name: &str) {
+    pub fn ensure_group(&mut self, group_name: &str) -> Result<(), VaultError> {
+        identifiers::validate_group(group_name)?;
         if !self.groups.iter().any(|g| g.name == group_name) {
             self.groups.push(Group {
                 name: group_name.to_string(),
                 secrets: vec![],
             });
         }
+        Ok(())
     }
 
     /// Add a secret path to a group.
-    pub fn add_secret_to_group(&mut self, group_name: &str, secret_path: &str) {
-        self.ensure_group(group_name);
-        let group = self.groups.iter_mut().find(|g| g.name == group_name).unwrap();
+    pub fn add_secret_to_group(
+        &mut self,
+        group_name: &str,
+        secret_path: &str,
+    ) -> Result<(), VaultError> {
+        identifiers::validate_group(group_name)?;
+        identifiers::validate_secret_path(secret_path)?;
+        self.ensure_group(group_name)?;
+        let group = self
+            .groups
+            .iter_mut()
+            .find(|g| g.name == group_name)
+            .unwrap();
         if !group.secrets.contains(&secret_path.to_string()) {
             group.secrets.push(secret_path.to_string());
         }
+        Ok(())
+    }
+
+    fn validate(&self) -> Result<(), VaultError> {
+        for agent in &self.agents {
+            identifiers::validate_agent(&agent.name)?;
+            for group in &agent.groups {
+                identifiers::validate_group(group)?;
+            }
+        }
+        for group in &self.groups {
+            identifiers::validate_group(&group.name)?;
+            for secret in &group.secrets {
+                identifiers::validate_secret_path(secret)?;
+            }
+        }
+        Ok(())
     }
 
     /// Get all agent names that have access to a group.
@@ -187,8 +223,8 @@ mod tests {
     fn test_manifest_operations() {
         let mut m = Manifest::new("alice");
         m.add_agent("bot1").unwrap();
-        m.ensure_group("stripe");
-        m.add_secret_to_group("stripe", "stripe/api-key");
+        m.ensure_group("stripe").unwrap();
+        m.add_secret_to_group("stripe", "stripe/api-key").unwrap();
         m.grant("bot1", "stripe").unwrap();
 
         assert_eq!(m.agents_in_group("stripe"), vec!["bot1"]);

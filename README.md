@@ -112,6 +112,7 @@ All vault data lives under `.agent-vault/` in your Git repo:
 - `.gitignore` blocks `*.key`, `*.pem`, `**/private.*` (but allows `*.escrow`)
 - Revocation **re-encrypts** affected secrets and warns about credential rotation
 - Private key files get `chmod 600` on Unix
+- Vault-controlled identifiers are lexically constrained before filesystem access: agent and group names are single normal components; secret paths may be nested normal components. Traversal, absolute paths, separators in identifiers, backslashes, and control characters are rejected. Explicit key, input, and restore destination paths remain user-controlled paths.
 
 ---
 

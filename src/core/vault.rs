@@ -2,7 +2,10 @@ use std::path::{Path, PathBuf};
 
 use secrecy::{ExposeSecret, SecretString};
 
-use crate::core::{config::Config, crypto, git, keys, manifest::Manifest, metadata::SecretMetadata, paths};
+use crate::core::{
+    config::Config, crypto, git, identifiers, keys, manifest::Manifest, metadata::SecretMetadata,
+    paths,
+};
 use crate::error::VaultError;
 
 #[derive(Debug)]
@@ -75,17 +78,20 @@ impl Vault {
         ];
         git::commit_files(&repo, &files_to_commit, "agent-vault: initialize vault")?;
 
-        Ok(Self {
-            paths: vault_paths,
-        })
+        Ok(Self { paths: vault_paths })
     }
 
     /// Add a new agent to the vault.
     pub fn add_agent(&self, name: &str) -> Result<PathBuf, VaultError> {
+        identifiers::validate_agent(name)?;
         let agent_dir = self.paths.agent_dir(name);
         if agent_dir.exists() {
             return Err(VaultError::AgentExists(name.to_string()));
         }
+
+        // Load and validate manifest before creating any key material.
+        let mut manifest = Manifest::load(&self.paths.manifest_file())?;
+        manifest.add_agent(name)?;
 
         // Generate agent keypair
         let (agent_secret, agent_public) = crypto::generate_keypair();
@@ -106,9 +112,7 @@ impl Vault {
             &self.paths.agent_escrow_file(name),
         )?;
 
-        // Update manifest
-        let mut manifest = Manifest::load(&self.paths.manifest_file())?;
-        manifest.add_agent(name)?;
+        // Save validated manifest after vault key material is in place.
         manifest.save(&self.paths.manifest_file())?;
 
         // Commit
@@ -118,11 +122,7 @@ impl Vault {
             self.paths.agent_escrow_file(name),
             self.paths.manifest_file(),
         ];
-        git::commit_files(
-            &repo,
-            &files,
-            &format!("agent-vault: add agent '{name}'"),
-        )?;
+        git::commit_files(&repo, &files, &format!("agent-vault: add agent '{name}'"))?;
 
         Ok(agent_key_path)
     }
@@ -137,10 +137,18 @@ impl Vault {
         expires: Option<chrono::DateTime<chrono::Utc>>,
         extra_agents: Option<&[String]>,
     ) -> Result<(), VaultError> {
+        identifiers::validate_secret_path(secret_path)?;
+        identifiers::validate_group(group)?;
+        if let Some(extras) = extra_agents {
+            for agent_name in extras {
+                identifiers::validate_agent(agent_name)?;
+            }
+        }
+
         let mut manifest = Manifest::load(&self.paths.manifest_file())?;
 
         // Ensure group exists and secret is registered
-        manifest.add_secret_to_group(group, secret_path);
+        manifest.add_secret_to_group(group, secret_path)?;
 
         // Collect authorized agents from group + extras
         let mut all_agents = manifest.agents_in_group(group);
@@ -218,7 +226,12 @@ impl Vault {
     }
 
     /// Get (decrypt) a secret using the provided identity key.
-    pub fn get_secret(&self, secret_path: &str, key_path: &Path) -> Result<SecretString, VaultError> {
+    pub fn get_secret(
+        &self,
+        secret_path: &str,
+        key_path: &Path,
+    ) -> Result<SecretString, VaultError> {
+        identifiers::validate_secret_path(secret_path)?;
         let enc_path = self.paths.secret_enc_file(secret_path);
         if !enc_path.exists() {
             return Err(VaultError::SecretNotFound(secret_path.to_string()));
@@ -244,6 +257,10 @@ impl Vault {
 
     /// List all secrets, optionally filtered by group.
     pub fn list_secrets(&self, group_filter: Option<&str>) -> Result<Vec<SecretMetadata>, VaultError> {
+        if let Some(group) = group_filter {
+            identifiers::validate_group(group)?;
+        }
+
         let secrets_dir = self.paths.secrets_dir();
         if !secrets_dir.exists() {
             return Ok(vec![]);
@@ -275,7 +292,12 @@ impl Vault {
 
     /// Re-encrypt a single secret for its current set of authorized recipients.
     /// Decrypts with the owner key, then re-encrypts for owner + all currently authorized agents.
-    fn re_encrypt_secret(&self, secret_path: &str, manifest: &Manifest) -> Result<Vec<PathBuf>, VaultError> {
+    fn re_encrypt_secret(
+        &self,
+        secret_path: &str,
+        manifest: &Manifest,
+    ) -> Result<Vec<PathBuf>, VaultError> {
+        identifiers::validate_secret_path(secret_path)?;
         let owner_key_path = paths::owner_key_path();
         let owner_private = keys::load_private_key(&owner_key_path)?;
         let owner_identity = crypto::parse_identity(owner_private.expose_secret())?;
@@ -314,7 +336,13 @@ impl Vault {
     }
 
     /// Grant an agent access to a group. Re-encrypts all secrets in that group.
-    pub fn grant_agent(&self, agent_name: &str, group_name: &str) -> Result<Vec<String>, VaultError> {
+    pub fn grant_agent(
+        &self,
+        agent_name: &str,
+        group_name: &str,
+    ) -> Result<Vec<String>, VaultError> {
+        identifiers::validate_agent(agent_name)?;
+        identifiers::validate_group(group_name)?;
         let mut manifest = Manifest::load(&self.paths.manifest_file())?;
         manifest.grant(agent_name, group_name)?;
 
@@ -340,7 +368,13 @@ impl Vault {
 
     /// Revoke an agent's access to a group. Re-encrypts all secrets in that group.
     /// Returns the list of secret paths that were re-encrypted.
-    pub fn revoke_agent(&self, agent_name: &str, group_name: &str) -> Result<Vec<String>, VaultError> {
+    pub fn revoke_agent(
+        &self,
+        agent_name: &str,
+        group_name: &str,
+    ) -> Result<Vec<String>, VaultError> {
+        identifiers::validate_agent(agent_name)?;
+        identifiers::validate_group(group_name)?;
         let mut manifest = Manifest::load(&self.paths.manifest_file())?;
         manifest.revoke(agent_name, group_name)?;
 
@@ -368,6 +402,7 @@ impl Vault {
     /// Re-encrypts all secrets the agent had access to, removes agent files.
     /// Returns the list of groups the agent belonged to (for rotation warnings).
     pub fn remove_agent(&self, name: &str) -> Result<Vec<String>, VaultError> {
+        identifiers::validate_agent(name)?;
         let mut manifest = Manifest::load(&self.paths.manifest_file())?;
         let groups = manifest.remove_agent(name)?;
 
@@ -391,7 +426,9 @@ impl Vault {
 
         // Git: remove agent files from index before deleting from disk
         let repo = git::open_repo(self.paths.root())?;
-        let agent_relative = std::path::Path::new(".agent-vault").join("agents").join(name);
+        let agent_relative = std::path::Path::new(".agent-vault")
+            .join("agents")
+            .join(name);
         git::remove_dir_from_index(&repo, &agent_relative)?;
 
         // Remove agent directory from disk
@@ -413,11 +450,17 @@ impl Vault {
     /// Recover an agent: decrypt escrow, generate new keypair, re-encrypt secrets, new escrow.
     /// Returns the path to the new private key.
     pub fn recover_agent(&self, name: &str) -> Result<PathBuf, VaultError> {
+        identifiers::validate_agent(name)?;
         // Verify agent exists
         let escrow_path = self.paths.agent_escrow_file(name);
         if !escrow_path.exists() {
             return Err(VaultError::AgentNotFound(name.to_string()));
         }
+
+        let manifest = Manifest::load(&self.paths.manifest_file())?;
+        let agent_groups = manifest
+            .agent_groups(name)
+            .ok_or_else(|| VaultError::AgentNotFound(name.to_string()))?;
 
         // Generate new keypair
         let (new_secret, new_public) = crypto::generate_keypair();
@@ -433,11 +476,7 @@ impl Vault {
         let owner_pub = keys::load_public_key(&self.paths.owner_pub_file())?;
         keys::create_escrow(&new_secret, &owner_pub, &self.paths.agent_escrow_file(name))?;
 
-        // Re-encrypt all secrets this agent has access to
-        let manifest = Manifest::load(&self.paths.manifest_file())?;
-        let agent_groups = manifest
-            .agent_groups(name)
-            .unwrap_or_default();
+        // Re-encrypt all secrets this agent has access to.
 
         let mut changed_files = vec![
             self.paths.agent_pub_file(name),
@@ -464,6 +503,7 @@ impl Vault {
     /// Restore an agent's original private key from escrow.
     /// Writes the decrypted key to the specified path.
     pub fn restore_agent(&self, name: &str, to_path: &Path) -> Result<(), VaultError> {
+        identifiers::validate_agent(name)?;
         let escrow_path = self.paths.agent_escrow_file(name);
         if !escrow_path.exists() {
             return Err(VaultError::AgentNotFound(name.to_string()));
@@ -473,7 +513,10 @@ impl Vault {
         let owner_private = keys::load_private_key(&owner_key_path)?;
         let agent_private = keys::recover_from_escrow(&escrow_path, &owner_private)?;
 
-        keys::save_private_key(to_path, &SecretString::from(agent_private.expose_secret().to_string()))?;
+        keys::save_private_key(
+            to_path,
+            &SecretString::from(agent_private.expose_secret().to_string()),
+        )?;
 
         Ok(())
     }
@@ -528,8 +571,13 @@ impl Vault {
                     let fname = file_entry.file_name().to_string_lossy().to_string();
                     if let Some(secret_name) = fname.strip_suffix(".enc") {
                         let secret_path = format!("{group_name}/{secret_name}");
-                        if manifest.authorized_agents_for_secret(&secret_path).is_empty()
-                            && !manifest.groups.iter().any(|g| g.secrets.contains(&secret_path))
+                        if manifest
+                            .authorized_agents_for_secret(&secret_path)
+                            .is_empty()
+                            && !manifest
+                                .groups
+                                .iter()
+                                .any(|g| g.secrets.contains(&secret_path))
                         {
                             issues.push(CheckIssue::Warning(format!(
                                 "Orphaned secret file: {secret_path}"
@@ -579,8 +627,7 @@ impl Vault {
                 if days_until < 0 {
                     issues.push(CheckIssue::Error(format!(
                         "Secret '{}' expired {} days ago",
-                        meta.name,
-                        -days_until
+                        meta.name, -days_until
                     )));
                 } else if days_until < 30 {
                     issues.push(CheckIssue::Warning(format!(

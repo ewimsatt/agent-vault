@@ -458,3 +458,61 @@ fn test_set_with_nonexistent_extra_agent_fails() {
     );
     assert!(result.is_err());
 }
+
+#[test]
+fn test_add_agent_rejects_traversal_without_creating_keys_or_repo_files() {
+    let _lock = HOME_LOCK.lock().unwrap();
+    let (_tmp, root) = setup_git_repo();
+    let vault = Vault::init(&root).unwrap();
+    let fake_home = root.join("fakehome");
+
+    assert!(vault.add_agent("../../escaped-agent").is_err());
+    assert!(!root.join("escaped-agent").exists());
+    assert!(!fake_home.join("escaped-agent.key").exists());
+}
+
+#[test]
+fn test_set_secret_rejects_alias_path_without_overwriting_existing_secret() {
+    let _lock = HOME_LOCK.lock().unwrap();
+    let (_tmp, root) = setup_git_repo();
+    let vault = Vault::init(&root).unwrap();
+    let owner_key = agent_vault::core::paths::owner_key_path();
+    vault
+        .set_secret("stripe/api-key", "original-value", "stripe", None, None)
+        .unwrap();
+
+    assert!(vault
+        .set_secret(
+            "evil/../stripe/api-key",
+            "replacement-value",
+            "evil",
+            None,
+            None,
+        )
+        .is_err());
+    assert_eq!(
+        vault
+            .get_secret("stripe/api-key", &owner_key)
+            .unwrap()
+            .expose_secret(),
+        "original-value"
+    );
+    assert!(!root.join(".agent-vault/secrets/evil").exists());
+}
+
+#[test]
+fn test_recover_rejects_invalid_manifest_before_replacing_agent_key() {
+    let _lock = HOME_LOCK.lock().unwrap();
+    let (_tmp, root) = setup_git_repo();
+    let vault = Vault::init(&root).unwrap();
+    let agent_key = vault.add_agent("bot1").unwrap();
+    let original_key = fs::read(&agent_key).unwrap();
+    fs::write(
+        root.join(".agent-vault/manifest.yaml"),
+        "version: 1\nowners: []\nagents:\n  - name: ../invalid\n    groups: []\ngroups: []\n",
+    )
+    .unwrap();
+
+    assert!(vault.recover_agent("bot1").is_err());
+    assert_eq!(fs::read(&agent_key).unwrap(), original_key);
+}

@@ -1,6 +1,7 @@
 pub mod config;
 pub mod crypto;
 pub mod git;
+pub mod identifiers;
 pub mod keys;
 pub mod manifest;
 pub mod metadata;

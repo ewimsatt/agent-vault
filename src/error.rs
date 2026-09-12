@@ -20,6 +20,9 @@ pub enum VaultError {
     #[error("group '{0}' not found in manifest")]
     GroupNotFound(String),
 
+    #[error("invalid vault identifier: {0}")]
+    InvalidIdentifier(String),
+
     #[error("no identity key found — use --key or set AGENT_VAULT_KEY")]
     NoIdentityKey,
 
