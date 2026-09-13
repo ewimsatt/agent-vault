@@ -1,7 +1,7 @@
 use chrono::DateTime;
 use secrecy::ExposeSecret;
 
-use crate::core::vault::Vault;
+use crate::core::vault::{IdentityKeySource, Vault};
 
 pub fn run_set(
     path: &str,
@@ -54,8 +54,10 @@ pub fn run_get(path: &str, key: Option<&str>) -> anyhow::Result<()> {
     // Pull latest before decrypting
     vault.pull()?;
 
-    let key_path = Vault::resolve_identity_key(key)?;
-    let plaintext = vault.get_secret(path, &key_path)?;
+    let plaintext = match Vault::resolve_identity_key(key)? {
+        IdentityKeySource::File(key_path) => vault.get_secret(path, &key_path)?,
+        IdentityKeySource::Raw(key) => vault.get_secret_with_key(path, &key)?,
+    };
 
     print!("{}", plaintext.expose_secret());
 

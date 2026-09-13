@@ -14,6 +14,12 @@ pub enum CheckIssue {
     Error(String),
 }
 
+/// An identity source selected without persisting raw environment key material.
+pub enum IdentityKeySource {
+    File(PathBuf),
+    Raw(SecretString),
+}
+
 pub struct Vault {
     pub paths: paths::VaultPaths,
 }
@@ -231,17 +237,39 @@ impl Vault {
         secret_path: &str,
         key_path: &Path,
     ) -> Result<SecretString, VaultError> {
+        let enc_path = self.encrypted_secret_path(secret_path)?;
+        let private_key = keys::load_private_key(key_path)?;
+        let identity = crypto::parse_identity(private_key.expose_secret())?;
+        self.decrypt_secret_file(&enc_path, &identity)
+    }
+
+    /// Get a secret using private key material already held in memory.
+    pub fn get_secret_with_key(
+        &self,
+        secret_path: &str,
+        private_key: &SecretString,
+    ) -> Result<SecretString, VaultError> {
+        let enc_path = self.encrypted_secret_path(secret_path)?;
+        let identity = crypto::parse_identity(private_key.expose_secret())?;
+        self.decrypt_secret_file(&enc_path, &identity)
+    }
+
+    fn encrypted_secret_path(&self, secret_path: &str) -> Result<PathBuf, VaultError> {
         identifiers::validate_secret_path(secret_path)?;
         let enc_path = self.paths.secret_enc_file(secret_path);
         if !enc_path.exists() {
             return Err(VaultError::SecretNotFound(secret_path.to_string()));
         }
+        Ok(enc_path)
+    }
 
-        let private_key = keys::load_private_key(key_path)?;
-        let identity = crypto::parse_identity(private_key.expose_secret())?;
-
-        let ciphertext = std::fs::read(&enc_path)?;
-        crypto::decrypt(&ciphertext, &identity)
+    fn decrypt_secret_file(
+        &self,
+        enc_path: &Path,
+        identity: &age::x25519::Identity,
+    ) -> Result<SecretString, VaultError> {
+        let ciphertext = std::fs::read(enc_path)?;
+        crypto::decrypt(&ciphertext, identity)
     }
 
     /// List all agents in the vault.
@@ -654,42 +682,30 @@ impl Vault {
     ///
     /// AGENT_VAULT_KEY supports both file paths and raw key strings
     /// (starting with `AGE-SECRET-KEY-`).
-    pub fn resolve_identity_key(key_flag: Option<&str>) -> Result<PathBuf, VaultError> {
+    pub fn resolve_identity_key(key_flag: Option<&str>) -> Result<IdentityKeySource, VaultError> {
         if let Some(k) = key_flag {
             let p = PathBuf::from(k);
             if p.exists() {
-                return Ok(p);
+                return Ok(IdentityKeySource::File(p));
             }
             return Err(VaultError::NoIdentityKey);
         }
 
         if let Ok(env_key) = std::env::var("AGENT_VAULT_KEY") {
-            if env_key.contains("AGE-SECRET-KEY-") {
-                // Raw key string — write to a temp file in the home vault dir
-                let key_dir = paths::home_vault_dir();
-                std::fs::create_dir_all(&key_dir)?;
-                let tmp_key_path = key_dir.join(".env-key.tmp");
-                std::fs::write(&tmp_key_path, &env_key)?;
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    std::fs::set_permissions(
-                        &tmp_key_path,
-                        std::fs::Permissions::from_mode(0o600),
-                    )?;
-                }
-                return Ok(tmp_key_path);
+            let trimmed = env_key.trim();
+            if trimmed.starts_with("AGE-SECRET-KEY-") {
+                return Ok(IdentityKeySource::Raw(SecretString::from(trimmed.to_string())));
             }
 
             let p = PathBuf::from(&env_key);
             if p.exists() {
-                return Ok(p);
+                return Ok(IdentityKeySource::File(p));
             }
         }
 
         let owner_path = paths::owner_key_path();
         if owner_path.exists() {
-            return Ok(owner_path);
+            return Ok(IdentityKeySource::File(owner_path));
         }
 
         Err(VaultError::NoIdentityKey)

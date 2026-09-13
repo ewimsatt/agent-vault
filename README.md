@@ -165,6 +165,8 @@ The `get` command resolves identity keys in this order:
 2. `AGENT_VAULT_KEY` environment variable (file path or raw `AGE-SECRET-KEY-...` string)
 3. `~/.agent-vault/owner.key` (default)
 
+When `AGENT_VAULT_KEY` contains a raw age identity, agent-vault parses it directly in memory. It does not create a temporary key file.
+
 ---
 
 ## SDKs

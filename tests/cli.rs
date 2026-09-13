@@ -129,6 +129,90 @@ fn test_cli_set_get() {
 }
 
 #[test]
+fn test_cli_get_with_raw_env_key_keeps_key_off_disk() {
+    let _lock = HOME_LOCK.lock().unwrap();
+    let (tmp, mut cmd) = setup();
+    cmd.arg("init").assert().success();
+    cmd_in(&tmp)
+        .args(["set", "stripe/api-key", "synthetic-secret"])
+        .assert()
+        .success();
+
+    let raw_key = fs::read_to_string(tmp.path().join("fakehome/.agent-vault/owner.key")).unwrap();
+    let temp_key_path = tmp.path().join("fakehome/.agent-vault/.env-key.tmp");
+    assert!(!temp_key_path.exists());
+
+    cmd_in(&tmp)
+        .args(["get", "stripe/api-key"])
+        .env("AGENT_VAULT_KEY", raw_key)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("synthetic-secret"));
+
+    assert!(
+        !temp_key_path.exists(),
+        "a raw AGENT_VAULT_KEY must never be persisted to disk"
+    );
+}
+
+#[test]
+fn test_cli_malformed_raw_env_key_does_not_fall_back_or_create_a_file() {
+    let _lock = HOME_LOCK.lock().unwrap();
+    let (tmp, mut cmd) = setup();
+    cmd.arg("init").assert().success();
+    cmd_in(&tmp)
+        .args(["set", "stripe/api-key", "synthetic-secret"])
+        .assert()
+        .success();
+
+    let raw_key = "AGE-SECRET-KEY-NOT-A-REAL-KEY";
+    let temp_key_path = tmp.path().join("fakehome/.agent-vault/.env-key.tmp");
+    cmd_in(&tmp)
+        .args(["get", "stripe/api-key"])
+        .env("AGENT_VAULT_KEY", raw_key)
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("synthetic-secret").not())
+        .stderr(predicate::str::contains(raw_key).not());
+
+    assert!(!temp_key_path.exists());
+}
+
+#[test]
+fn test_cli_raw_env_key_accepts_surrounding_whitespace() {
+    let _lock = HOME_LOCK.lock().unwrap();
+    let (tmp, mut cmd) = setup();
+    cmd.arg("init").assert().success();
+    cmd_in(&tmp)
+        .args(["set", "stripe/api-key", "synthetic-secret"])
+        .assert()
+        .success();
+
+    let raw_key = fs::read_to_string(tmp.path().join("fakehome/.agent-vault/owner.key")).unwrap();
+    cmd_in(&tmp)
+        .args(["get", "stripe/api-key"])
+        .env("AGENT_VAULT_KEY", format!("\n  {raw_key}\n"))
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("synthetic-secret"));
+}
+
+#[test]
+fn test_cli_invalid_secret_path_is_rejected_before_malformed_raw_key() {
+    let _lock = HOME_LOCK.lock().unwrap();
+    let (tmp, mut cmd) = setup();
+    cmd.arg("init").assert().success();
+
+    cmd_in(&tmp)
+        .args(["get", "../invalid"])
+        .env("AGENT_VAULT_KEY", "AGE-SECRET-KEY-NOT-A-REAL-KEY")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid vault identifier"))
+        .stderr(predicate::str::contains("age key error").not());
+}
+
+#[test]
 fn test_cli_set_from_file() {
     let _lock = HOME_LOCK.lock().unwrap();
     let (tmp, mut cmd) = setup();
