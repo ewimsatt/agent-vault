@@ -13,6 +13,7 @@ import * as age from "age-encryption";
 import {
   VaultNotFoundError,
   SecretNotFoundError,
+  InvalidIdentifierError,
   NotAuthorizedError,
 } from "./errors.js";
 import { Manifest } from "./manifest.js";
@@ -62,6 +63,30 @@ function toFilePath(secretPath: string, suffix: string): string {
   const dir = parts.slice(0, -1).join("/");
   const file = parts[parts.length - 1] + suffix;
   return join(dir, file);
+}
+
+/**
+ * Ensure a caller-provided secret path cannot escape the secrets directory.
+ * This mirrors the Rust CLI's lexical identifier contract instead of relying
+ * on host filesystem normalization.
+ */
+export function validateSecretPath(secretPath: unknown): asserts secretPath is string {
+  if (typeof secretPath !== "string") {
+    throw new InvalidIdentifierError("invalid secret path: expected a string");
+  }
+
+  if (
+    secretPath.length === 0 ||
+    secretPath.includes("\\") ||
+    /[\x00-\x1F\x7F-\x9F]/.test(secretPath) ||
+    /^[A-Za-z]:/.test(secretPath)
+  ) {
+    throw new InvalidIdentifierError(`invalid secret path: ${JSON.stringify(secretPath)}`);
+  }
+
+  if (secretPath.split("/").some((component) => component === "" || component === "." || component === "..")) {
+    throw new InvalidIdentifierError(`invalid secret path: ${JSON.stringify(secretPath)}`);
+  }
 }
 
 /**
@@ -195,6 +220,8 @@ export class Vault {
    * @throws NotAuthorizedError if the key cannot decrypt the secret.
    */
   async get(secretPath: string): Promise<string> {
+    validateSecretPath(secretPath);
+
     if (this._autoPull) {
       this.pull();
     }

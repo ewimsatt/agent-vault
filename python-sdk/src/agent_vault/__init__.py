@@ -5,6 +5,7 @@ from agent_vault.errors import (
     VaultError,
     VaultNotFoundError,
     SecretNotFoundError,
+    InvalidIdentifierError,
     NotAuthorizedError,
 )
 
@@ -14,5 +15,6 @@ __all__ = [
     "VaultError",
     "VaultNotFoundError",
     "SecretNotFoundError",
+    "InvalidIdentifierError",
     "NotAuthorizedError",
 ]

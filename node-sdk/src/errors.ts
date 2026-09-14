@@ -27,6 +27,14 @@ export class SecretNotFoundError extends VaultError {
   }
 }
 
+/** A vault-controlled identifier is malformed or unsafe. */
+export class InvalidIdentifierError extends VaultError {
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidIdentifierError";
+  }
+}
+
 /** The provided key cannot decrypt the requested secret. */
 export class NotAuthorizedError extends VaultError {
   constructor(message: string) {

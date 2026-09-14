@@ -13,6 +13,10 @@ class SecretNotFoundError(VaultError):
     """The requested secret does not exist in the vault."""
 
 
+class InvalidIdentifierError(VaultError):
+    """A vault-controlled identifier is malformed or unsafe."""
+
+
 class NotAuthorizedError(VaultError):
     """The provided key cannot decrypt the requested secret."""
 

@@ -11,6 +11,7 @@ from typing import Optional
 
 from agent_vault.crypto import decrypt_secret, load_identity, load_identity_from_str
 from agent_vault.errors import (
+    InvalidIdentifierError,
     NotAuthorizedError,
     SecretNotFoundError,
     VaultNotFoundError,
@@ -149,6 +150,8 @@ class Vault:
             SecretNotFoundError: If the secret doesn't exist.
             NotAuthorizedError: If the key can't decrypt the secret.
         """
+        validate_secret_path(secret_path)
+
         if self._auto_pull:
             self.pull()
 
@@ -214,6 +217,32 @@ class Vault:
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
         return False
+
+
+def validate_secret_path(secret_path: object) -> None:
+    """Ensure a caller-provided secret path cannot escape ``secrets/``.
+
+    This deliberately mirrors the Rust CLI's lexical identifier contract rather
+    than relying on host filesystem normalization.
+    """
+    if not isinstance(secret_path, str):
+        raise InvalidIdentifierError("invalid secret path: expected a string")
+
+    if (
+        not secret_path
+        or "\\" in secret_path
+        or any(ord(char) <= 31 or 127 <= ord(char) <= 159 for char in secret_path)
+        or (
+            len(secret_path) >= 2
+            and secret_path[0].isascii()
+            and secret_path[0].isalpha()
+            and secret_path[1] == ":"
+        )
+    ):
+        raise InvalidIdentifierError(f"invalid secret path: {secret_path!r}")
+
+    if any(component in ("", ".", "..") for component in secret_path.split("/")):
+        raise InvalidIdentifierError(f"invalid secret path: {secret_path!r}")
 
 
 def _to_file_path(secret_path: str, suffix: str) -> Path:

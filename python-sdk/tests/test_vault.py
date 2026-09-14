@@ -12,7 +12,13 @@ from pathlib import Path
 
 import pytest
 
-from agent_vault import Vault, SecretNotFoundError, NotAuthorizedError, VaultNotFoundError
+from agent_vault import (
+    InvalidIdentifierError,
+    NotAuthorizedError,
+    SecretNotFoundError,
+    Vault,
+    VaultNotFoundError,
+)
 
 
 # Resolve the pre-built binary path once at module load
@@ -185,6 +191,52 @@ class TestVaultGet:
                 os.environ["AGENT_VAULT_KEY"] = old_env
             if old_home:
                 os.environ["HOME"] = old_home
+
+
+    @pytest.mark.parametrize(
+        "secret_path",
+        [
+            "",
+            "/outside",
+            "../outside",
+            "stripe/../../outside",
+            "stripe//api-key",
+            "stripe/./api-key",
+            "stripe/../api-key",
+            "stripe/api-key/",
+            r"stripe\\api-key",
+            "C:temp",
+            "x\x00y",
+            "x\x7fy",
+            "x\x85y",
+        ],
+    )
+    def test_get_rejects_malformed_secret_paths_before_pulling(
+        self, vault_env, secret_path
+    ):
+        """SDK callers cannot use path aliases to leave the secrets directory."""
+        vault = Vault(
+            repo_path=vault_env["repo"],
+            key_path=vault_env["owner_key"],
+            auto_pull=True,
+        )
+
+        def unexpected_pull():
+            pytest.fail("invalid secret paths must be rejected before git pull")
+
+        vault.pull = unexpected_pull
+        with pytest.raises(InvalidIdentifierError):
+            vault.get(secret_path)
+
+    @pytest.mark.parametrize(
+        "secret_path",
+        ["api-key", "stripe/api-key", "stripe/production/api-key", "dotted.name/_ok-1", "unicode/秘密"],
+    )
+    def test_valid_secret_path_shape_is_not_rejected(self, secret_path):
+        """Lexical validation preserves the Rust CLI's accepted identifier shapes."""
+        from agent_vault.vault import validate_secret_path
+
+        validate_secret_path(secret_path)
 
 
 class TestVaultList:

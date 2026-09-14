@@ -9,6 +9,7 @@ export {
   VaultError,
   VaultNotFoundError,
   SecretNotFoundError,
+  InvalidIdentifierError,
   NotAuthorizedError,
   ManifestError,
 } from "./errors.js";
