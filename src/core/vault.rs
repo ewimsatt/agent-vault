@@ -444,7 +444,11 @@ impl Vault {
             }
         }
 
-        let mut changed_files = vec![self.paths.manifest_file()];
+        let mut changed_files = vec![
+            self.paths.manifest_file(),
+            self.paths.agent_pub_file(name),
+            self.paths.agent_escrow_file(name),
+        ];
         for sp in &all_secret_paths {
             let mut files = self.re_encrypt_secret(sp, &manifest)?;
             changed_files.append(&mut files);
@@ -452,20 +456,14 @@ impl Vault {
 
         manifest.save(&self.paths.manifest_file())?;
 
-        // Git: remove agent files from index before deleting from disk
-        let repo = git::open_repo(self.paths.root())?;
-        let agent_relative = std::path::Path::new(".agent-vault")
-            .join("agents")
-            .join(name);
-        git::remove_dir_from_index(&repo, &agent_relative)?;
-
-        // Remove agent directory from disk
+        // Remove agent directory from disk before committing its tracked deletions.
         let agent_dir = self.paths.agent_dir(name);
         if agent_dir.exists() {
             std::fs::remove_dir_all(&agent_dir)?;
         }
 
-        // Commit the manifest + re-encrypted secrets + index removals
+        // Commit the manifest + re-encrypted secrets + agent-file deletions.
+        let repo = git::open_repo(self.paths.root())?;
         git::commit_files(
             &repo,
             &changed_files,

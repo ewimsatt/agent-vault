@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
-use git2::{Repository, Signature};
+use git2::Repository;
 
 use crate::error::VaultError;
 
@@ -37,45 +38,138 @@ pub fn open_repo(path: &Path) -> Result<Repository, VaultError> {
     Ok(repo)
 }
 
-/// Stage files and create a commit.
+/// Commit only the supplied paths, preserving the caller's index and running the pre-commit hook.
 pub fn commit_files(repo: &Repository, paths: &[PathBuf], message: &str) -> Result<(), VaultError> {
-    let mut index = repo.index()?;
+    if paths.is_empty() {
+        return Err(VaultError::Git(git2::Error::from_str(
+            "refusing to create a commit with no explicit paths",
+        )));
+    }
 
     let workdir = repo
         .workdir()
         .ok_or_else(|| VaultError::Git(git2::Error::from_str("bare repository")))?;
-
-    // Canonicalize workdir to handle symlinks (e.g., /var -> /private/var on macOS)
     let workdir_canonical = workdir.canonicalize().unwrap_or_else(|_| workdir.to_path_buf());
 
+    let mut relative_paths = Vec::with_capacity(paths.len());
     for path in paths {
-        // Canonicalize the file path too, then strip the workdir prefix
-        let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
-        let relative = canonical
-            .strip_prefix(&workdir_canonical)
-            .unwrap_or(&canonical);
-        index.add_path(relative)?;
+        let canonical = canonicalize_existing_ancestor(path)?;
+        let relative = canonical.strip_prefix(&workdir_canonical).map_err(|_| {
+            VaultError::Git(git2::Error::from_str(
+                "commit path is outside the repository worktree",
+            ))
+        })?;
+        if relative.is_absolute()
+            || relative
+                .components()
+                .any(|component| matches!(component, std::path::Component::ParentDir))
+        {
+            return Err(VaultError::Git(git2::Error::from_str(
+                "commit path must be repository-relative",
+            )));
+        }
+        relative_paths.push(relative.to_path_buf());
     }
-    index.write()?;
 
-    let tree_id = index.write_tree()?;
-    let tree = repo.find_tree(tree_id)?;
-
-    let sig = Signature::now("agent-vault", "agent-vault@localhost")?;
-
-    // Check if there's a HEAD commit to use as parent
-    let parent_commit = repo.head().ok().and_then(|head| head.peel_to_commit().ok());
-
-    match parent_commit {
-        Some(parent) => {
-            repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[&parent])?;
-        }
-        None => {
-            repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[])?;
-        }
+    // Build an isolated index so unrelated staged work can neither enter this commit nor be changed.
+    let index_dir = tempfile::tempdir()?;
+    let index_path = index_dir.path().join("index");
+    let git_command = |args: &[&str]| {
+        Command::new("git")
+            .current_dir(workdir)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_COMMON_DIR")
+            .env_remove("GIT_OBJECT_DIRECTORY")
+            .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
+            .env_remove("GIT_PREFIX")
+            .env("GIT_INDEX_FILE", &index_path)
+            .args(args)
+            .output()
     };
 
+    let read_tree_args = if repo.head().is_ok() {
+        vec!["read-tree", "HEAD"]
+    } else {
+        vec!["read-tree", "--empty"]
+    };
+    let output = git_command(&read_tree_args)?;
+    if !output.status.success() {
+        return Err(git_command_error("prepare isolated index", &output));
+    }
+
+    let path_args: Vec<&str> = relative_paths
+        .iter()
+        .map(|path| path.to_str().ok_or_else(|| VaultError::Git(git2::Error::from_str("commit path is not valid UTF-8"))))
+        .collect::<Result<_, _>>()?;
+    let mut add_args = vec!["add", "--all", "--force", "--"];
+    add_args.extend(path_args.iter().copied());
+    let output = git_command(&add_args)?;
+    if !output.status.success() {
+        return Err(git_command_error("stage isolated commit paths", &output));
+    }
+
+    let output = git_command(&["hook", "run", "pre-commit"])?;
+    if !output.status.success() {
+        return Err(git_command_error("run pre-commit hook", &output));
+    }
+
+    let output = git_command(&["diff", "--cached", "--name-only"])?;
+    if !output.status.success() {
+        return Err(git_command_error("inspect pre-commit hook changes", &output));
+    }
+    for changed_path in String::from_utf8_lossy(&output.stdout).lines() {
+        if !relative_paths.iter().any(|path| path == Path::new(changed_path)) {
+            return Err(VaultError::Git(git2::Error::from_str(
+                "pre-commit hook staged a path outside this vault operation",
+            )));
+        }
+    }
+
+    let commit_args = vec![
+        "-c",
+        "user.name=agent-vault",
+        "-c",
+        "user.email=agent-vault@localhost",
+        "commit",
+        "--no-verify",
+        "-m",
+        message,
+    ];
+    let output = git_command(&commit_args)?;
+    if !output.status.success() {
+        return Err(git_command_error("commit isolated paths", &output));
+    }
+
     Ok(())
+}
+
+fn canonicalize_existing_ancestor(path: &Path) -> Result<PathBuf, VaultError> {
+    let mut missing = Vec::new();
+    let mut ancestor = path;
+    while !ancestor.exists() {
+        let name = ancestor.file_name().ok_or_else(|| {
+            VaultError::Git(git2::Error::from_str("commit path has no existing ancestor"))
+        })?;
+        missing.push(name.to_os_string());
+        ancestor = ancestor.parent().ok_or_else(|| {
+            VaultError::Git(git2::Error::from_str("commit path has no existing ancestor"))
+        })?;
+    }
+
+    let mut canonical = ancestor.canonicalize()?;
+    for component in missing.iter().rev() {
+        canonical.push(component);
+    }
+    Ok(canonical)
+}
+
+fn git_command_error(action: &str, output: &std::process::Output) -> VaultError {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    VaultError::Git(git2::Error::from_str(&format!(
+        "git {action} failed: {stderr}{stdout}"
+    )))
 }
 
 /// Pull latest from the remote (if one exists). Best-effort; silently skips if no remote.
@@ -109,15 +203,6 @@ pub fn pull(repo: &Repository) -> Result<(), VaultError> {
     }
     // If not fast-forward or up-to-date, do nothing (don't attempt merge)
 
-    Ok(())
-}
-
-/// Remove a directory from the git index by its relative path within the vault.
-/// `relative_path` should be relative to the repo root (e.g., ".agent-vault/agents/bot1").
-pub fn remove_dir_from_index(repo: &Repository, relative_path: &Path) -> Result<(), VaultError> {
-    let mut index = repo.index()?;
-    index.remove_dir(relative_path, 0)?;
-    index.write()?;
     Ok(())
 }
 

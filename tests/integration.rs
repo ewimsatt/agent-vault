@@ -130,6 +130,81 @@ fn test_multiple_secrets() {
     );
 }
 
+#[test]
+fn test_vault_commit_preserves_unrelated_staged_file() {
+    let _lock = HOME_LOCK.lock().unwrap();
+    let (_tmp, root) = setup_git_repo();
+    let vault = Vault::init(&root).unwrap();
+
+    let unrelated = root.join("notes.txt");
+    fs::write(&unrelated, "do not commit this draft").unwrap();
+    let repo = git2::Repository::open(&root).unwrap();
+    let mut index = repo.index().unwrap();
+    index.add_path(std::path::Path::new("notes.txt")).unwrap();
+    index.write().unwrap();
+
+    vault
+        .set_secret("stripe/api-key", "synthetic-secret", "stripe", None, None)
+        .unwrap();
+
+    let head = repo.head().unwrap().peel_to_commit().unwrap();
+    let tree = head.tree().unwrap();
+    assert!(tree.get_path(std::path::Path::new("notes.txt")).is_err());
+
+    let index = repo.index().unwrap();
+    let staged = index.get_path(std::path::Path::new("notes.txt"), 0).unwrap();
+    let blob = repo.find_blob(staged.id).unwrap();
+    assert_eq!(blob.content(), b"do not commit this draft");
+}
+
+#[test]
+fn test_vault_commit_rejects_empty_path_list() {
+    let _lock = HOME_LOCK.lock().unwrap();
+    let (_tmp, root) = setup_git_repo();
+    Vault::init(&root).unwrap();
+
+    fs::write(root.join("unrelated.txt"), "synthetic untracked draft").unwrap();
+    let repo = git2::Repository::open(&root).unwrap();
+    let before = repo.head().unwrap().target().unwrap();
+
+    assert!(agent_vault::core::git::commit_files(&repo, &[], "should not commit").is_err());
+
+    assert_eq!(repo.head().unwrap().target().unwrap(), before);
+    assert!(repo
+        .index()
+        .unwrap()
+        .get_path(std::path::Path::new("unrelated.txt"), 0)
+        .is_none());
+}
+
+#[test]
+fn test_vault_commit_rejects_pre_commit_hook_that_stages_unrelated_file() {
+    let _lock = HOME_LOCK.lock().unwrap();
+    let (_tmp, root) = setup_git_repo();
+    let vault = Vault::init(&root).unwrap();
+    fs::write(root.join("unrelated.txt"), "synthetic draft").unwrap();
+    let hook = root.join(".git/hooks/pre-commit");
+    fs::write(&hook, "#!/bin/sh\ngit add unrelated.txt\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let repo = git2::Repository::open(&root).unwrap();
+    let before = repo.head().unwrap().target().unwrap();
+
+    assert!(vault
+        .set_secret("stripe/api-key", "synthetic-secret", "stripe", None, None)
+        .is_err());
+
+    assert_eq!(repo.head().unwrap().target().unwrap(), before);
+    assert!(repo
+        .index()
+        .unwrap()
+        .get_path(std::path::Path::new("unrelated.txt"), 0)
+        .is_none());
+}
+
 // ---- Grant / Revoke tests ----
 
 #[test]
