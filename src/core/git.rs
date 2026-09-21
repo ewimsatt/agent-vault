@@ -49,7 +49,9 @@ pub fn commit_files(repo: &Repository, paths: &[PathBuf], message: &str) -> Resu
     let workdir = repo
         .workdir()
         .ok_or_else(|| VaultError::Git(git2::Error::from_str("bare repository")))?;
-    let workdir_canonical = workdir.canonicalize().unwrap_or_else(|_| workdir.to_path_buf());
+    let workdir_canonical = workdir
+        .canonicalize()
+        .unwrap_or_else(|_| workdir.to_path_buf());
 
     let mut relative_paths = Vec::with_capacity(paths.len());
     for path in paths {
@@ -100,7 +102,11 @@ pub fn commit_files(repo: &Repository, paths: &[PathBuf], message: &str) -> Resu
 
     let path_args: Vec<&str> = relative_paths
         .iter()
-        .map(|path| path.to_str().ok_or_else(|| VaultError::Git(git2::Error::from_str("commit path is not valid UTF-8"))))
+        .map(|path| {
+            path.to_str().ok_or_else(|| {
+                VaultError::Git(git2::Error::from_str("commit path is not valid UTF-8"))
+            })
+        })
         .collect::<Result<_, _>>()?;
     let mut add_args = vec!["add", "--all", "--force", "--"];
     add_args.extend(path_args.iter().copied());
@@ -116,10 +122,16 @@ pub fn commit_files(repo: &Repository, paths: &[PathBuf], message: &str) -> Resu
 
     let output = git_command(&["diff", "--cached", "--name-only"])?;
     if !output.status.success() {
-        return Err(git_command_error("inspect pre-commit hook changes", &output));
+        return Err(git_command_error(
+            "inspect pre-commit hook changes",
+            &output,
+        ));
     }
     for changed_path in String::from_utf8_lossy(&output.stdout).lines() {
-        if !relative_paths.iter().any(|path| path == Path::new(changed_path)) {
+        if !relative_paths
+            .iter()
+            .any(|path| path == Path::new(changed_path))
+        {
             return Err(VaultError::Git(git2::Error::from_str(
                 "pre-commit hook staged a path outside this vault operation",
             )));
@@ -149,11 +161,15 @@ fn canonicalize_existing_ancestor(path: &Path) -> Result<PathBuf, VaultError> {
     let mut ancestor = path;
     while !ancestor.exists() {
         let name = ancestor.file_name().ok_or_else(|| {
-            VaultError::Git(git2::Error::from_str("commit path has no existing ancestor"))
+            VaultError::Git(git2::Error::from_str(
+                "commit path has no existing ancestor",
+            ))
         })?;
         missing.push(name.to_os_string());
         ancestor = ancestor.parent().ok_or_else(|| {
-            VaultError::Git(git2::Error::from_str("commit path has no existing ancestor"))
+            VaultError::Git(git2::Error::from_str(
+                "commit path has no existing ancestor",
+            ))
         })?;
     }
 
@@ -182,7 +198,20 @@ pub fn pull(repo: &Repository) -> Result<(), VaultError> {
     let remote_name = remote.name().unwrap_or("origin").to_string();
     drop(remote);
 
-    // Fetch
+    // Refuse to touch a repository with local work. This is intentionally stricter than
+    // a normal Git pull: the CLI invokes this automatically before reading a secret.
+    let mut status_options = git2::StatusOptions::new();
+    status_options
+        .include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .include_unmodified(false);
+    if !repo.statuses(Some(&mut status_options))?.is_empty() {
+        return Err(VaultError::Git(git2::Error::from_str(
+            "refusing to pull into a repository with local changes or untracked files",
+        )));
+    }
+
+    // Fetch only after confirming the local worktree and index are clean.
     let mut remote = repo.find_remote(&remote_name)?;
     remote.fetch(&[] as &[&str], None, None)?;
 
@@ -196,9 +225,12 @@ pub fn pull(repo: &Repository) -> Result<(), VaultError> {
     let (analysis, _) = repo.merge_analysis(&[&fetch_commit])?;
     if analysis.is_fast_forward() {
         if let Ok(mut head_ref) = repo.head() {
+            let commit = repo.find_commit(fetch_commit.id())?;
+            let mut checkout = git2::build::CheckoutBuilder::default();
+            // A safe checkout runs before moving HEAD, so checkout failure cannot advance it.
+            repo.checkout_tree(commit.as_object(), Some(&mut checkout))?;
             let msg = format!("Fast-forward to {}", fetch_commit.id());
             head_ref.set_target(fetch_commit.id(), &msg)?;
-            repo.checkout_head(Some(git2::build::CheckoutBuilder::default().force()))?;
         }
     }
     // If not fast-forward or up-to-date, do nothing (don't attempt merge)
@@ -239,6 +271,59 @@ pub fn install_pre_commit_hook(repo: &Repository) -> Result<(), VaultError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use git2::{Oid, Signature};
+    use tempfile::TempDir;
+
+    fn commit_file(repo: &Repository, path: &str, content: &str, message: &str) -> Oid {
+        let workdir = repo.workdir().unwrap();
+        let file_path = workdir.join(path);
+        if let Some(parent) = file_path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&file_path, content).unwrap();
+
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new(path)).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let signature = Signature::now("agent-vault test", "test@agent-vault.invalid").unwrap();
+        let parent = repo.head().ok().and_then(|head| head.peel_to_commit().ok());
+        let parents: Vec<&git2::Commit<'_>> = parent.iter().collect();
+
+        repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            message,
+            &tree,
+            &parents,
+        )
+        .unwrap()
+    }
+
+    fn push_master(repo: &Repository) {
+        repo.find_remote("origin")
+            .unwrap()
+            .push(&["refs/heads/master:refs/heads/master"], None)
+            .unwrap();
+    }
+
+    fn cloned_repo_with_origin() -> (TempDir, TempDir, TempDir, Repository, Repository) {
+        let bare_dir = tempfile::tempdir().unwrap();
+        Repository::init_bare(bare_dir.path()).unwrap();
+
+        let seed_dir = tempfile::tempdir().unwrap();
+        let seed = Repository::init(seed_dir.path()).unwrap();
+        seed.remote("origin", bare_dir.path().to_str().unwrap())
+            .unwrap();
+        commit_file(&seed, "tracked.txt", "base\n", "initial commit");
+        push_master(&seed);
+
+        let local_dir = tempfile::tempdir().unwrap();
+        let local = Repository::clone(bare_dir.path().to_str().unwrap(), local_dir.path()).unwrap();
+        (bare_dir, seed_dir, local_dir, seed, local)
+    }
 
     #[test]
     fn test_pre_commit_hook_contains_all_patterns() {
@@ -248,5 +333,100 @@ mod tests {
         assert!(script.contains("BEGIN RSA PRIVATE KEY"));
         assert!(script.contains("BEGIN EC PRIVATE KEY"));
         assert!(script.contains("BEGIN OPENSSH PRIVATE KEY"));
+    }
+
+    #[test]
+    fn pull_fast_forwards_clean_clone() {
+        let (_bare_dir, _seed_dir, local_dir, seed, local) = cloned_repo_with_origin();
+        let remote_commit = commit_file(&seed, "remote.txt", "from remote\n", "remote update");
+        push_master(&seed);
+
+        pull(&local).unwrap();
+
+        assert_eq!(local.head().unwrap().target(), Some(remote_commit));
+        assert_eq!(
+            std::fs::read_to_string(local_dir.path().join("remote.txt")).unwrap(),
+            "from remote\n"
+        );
+    }
+
+    #[test]
+    fn pull_rejects_dirty_repository_without_changing_head_index_or_worktree() {
+        let (_bare_dir, _seed_dir, local_dir, seed, local) = cloned_repo_with_origin();
+        commit_file(&seed, "remote.txt", "from remote\n", "remote update");
+        push_master(&seed);
+        let original_head = local.head().unwrap().target();
+
+        std::fs::write(
+            local_dir.path().join("tracked.txt"),
+            "staged local content\n",
+        )
+        .unwrap();
+        let mut index = local.index().unwrap();
+        index.add_path(Path::new("tracked.txt")).unwrap();
+        index.write().unwrap();
+        std::fs::write(
+            local_dir.path().join("tracked.txt"),
+            "unstaged local content\n",
+        )
+        .unwrap();
+
+        assert!(pull(&local).is_err());
+
+        assert_eq!(local.head().unwrap().target(), original_head);
+        let index = local.index().unwrap();
+        let staged = index.get_path(Path::new("tracked.txt"), 0).unwrap();
+        assert_eq!(
+            local.find_blob(staged.id).unwrap().content(),
+            b"staged local content\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(local_dir.path().join("tracked.txt")).unwrap(),
+            "unstaged local content\n"
+        );
+    }
+
+    #[test]
+    fn pull_rejects_untracked_file_collision_without_advancing_head() {
+        let (_bare_dir, _seed_dir, local_dir, seed, local) = cloned_repo_with_origin();
+        let remote_commit =
+            commit_file(&seed, "collision.txt", "remote content\n", "remote update");
+        push_master(&seed);
+        let original_head = local.head().unwrap().target();
+        std::fs::write(
+            local_dir.path().join("collision.txt"),
+            "local untracked content\n",
+        )
+        .unwrap();
+
+        assert!(pull(&local).is_err());
+
+        assert_eq!(local.head().unwrap().target(), original_head);
+        assert_ne!(local.head().unwrap().target(), Some(remote_commit));
+        assert_eq!(
+            std::fs::read_to_string(local_dir.path().join("collision.txt")).unwrap(),
+            "local untracked content\n"
+        );
+    }
+
+    #[test]
+    fn pull_without_origin_is_a_no_op() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = Repository::init(dir.path()).unwrap();
+
+        pull(&repo).unwrap();
+    }
+
+    #[test]
+    fn pull_leaves_non_fast_forward_branch_unchanged() {
+        let (_bare_dir, _seed_dir, local_dir, seed, local) = cloned_repo_with_origin();
+        let original_head = commit_file(&local, "local.txt", "local commit\n", "local update");
+        commit_file(&seed, "remote.txt", "remote commit\n", "remote update");
+        push_master(&seed);
+
+        pull(&local).unwrap();
+
+        assert_eq!(local.head().unwrap().target(), Some(original_head));
+        assert!(!local_dir.path().join("remote.txt").exists());
     }
 }

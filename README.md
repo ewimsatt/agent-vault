@@ -142,8 +142,10 @@ All vault data lives under `.agent-vault/` in your Git repo:
 |---------|-------------|
 | `agent-vault set <path> <value> [--agents a,b]` | Encrypt and store a secret |
 | `agent-vault set <path> --from-file <file>` | Store secret from file |
-| `agent-vault get <path> [--key <path>]` | Pull latest, decrypt, output to stdout |
+| `agent-vault get <path> [--key <path>]` | Safely fast-forward from `origin` when clean, decrypt, output to stdout |
 | `agent-vault list [--group <name>] [--json]` | List secrets with metadata |
+
+`agent-vault get` pulls automatically only when the repository has no staged, modified, or untracked files. It refuses unsafe local state rather than stashing, resetting, merging, or rebasing it.
 
 ### Access Control
 
