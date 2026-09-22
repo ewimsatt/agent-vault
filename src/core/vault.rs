@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use secrecy::{ExposeSecret, SecretString};
@@ -18,6 +19,37 @@ pub enum CheckIssue {
 pub enum IdentityKeySource {
     File(PathBuf),
     Raw(SecretString),
+}
+
+fn discover_secret_records(
+    directory: &Path,
+    root: &Path,
+    enc_records: &mut Vec<(String, PathBuf)>,
+    meta_records: &mut Vec<(String, PathBuf)>,
+) -> Result<(), VaultError> {
+    for entry in std::fs::read_dir(directory)? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            discover_secret_records(&path, root, enc_records, meta_records)?;
+            continue;
+        }
+        if !file_type.is_file() {
+            continue;
+        }
+
+        let relative = path
+            .strip_prefix(root)
+            .expect("secret record is under root");
+        let relative = relative.to_string_lossy().replace('\\', "/");
+        if let Some(secret_path) = relative.strip_suffix(".enc") {
+            enc_records.push((secret_path.to_string(), path));
+        } else if let Some(secret_path) = relative.strip_suffix(".meta") {
+            meta_records.push((secret_path.to_string(), path));
+        }
+    }
+    Ok(())
 }
 
 pub struct Vault {
@@ -583,46 +615,113 @@ impl Vault {
             }
         }
 
-        // Check for orphaned secret files (on disk but not in manifest)
+        // Recursively discover encrypted and metadata records. Secret paths may be nested below
+        // their group directory, so treating only immediate children as records misses valid paths.
         let secrets_dir = self.paths.secrets_dir();
+        let mut enc_records = vec![];
+        let mut meta_records = vec![];
         if secrets_dir.exists() {
-            for group_entry in std::fs::read_dir(&secrets_dir)? {
-                let group_entry = group_entry?;
-                if !group_entry.file_type()?.is_dir() {
-                    continue;
-                }
-                let group_name = group_entry.file_name().to_string_lossy().to_string();
-                for file_entry in std::fs::read_dir(group_entry.path())? {
-                    let file_entry = file_entry?;
-                    let fname = file_entry.file_name().to_string_lossy().to_string();
-                    if let Some(secret_name) = fname.strip_suffix(".enc") {
-                        let secret_path = format!("{group_name}/{secret_name}");
-                        if manifest
-                            .authorized_agents_for_secret(&secret_path)
-                            .is_empty()
-                            && !manifest
-                                .groups
-                                .iter()
-                                .any(|g| g.secrets.contains(&secret_path))
-                        {
-                            issues.push(CheckIssue::Warning(format!(
-                                "Orphaned secret file: {secret_path}"
-                            )));
-                        }
-                    }
-                }
+            discover_secret_records(
+                &secrets_dir,
+                &secrets_dir,
+                &mut enc_records,
+                &mut meta_records,
+            )?;
+        }
+        let enc_paths: BTreeSet<_> = enc_records
+            .iter()
+            .map(|(secret_path, _)| secret_path.clone())
+            .collect();
+        let meta_paths: BTreeSet<_> = meta_records
+            .iter()
+            .map(|(secret_path, _)| secret_path.clone())
+            .collect();
+        let manifest_paths: BTreeSet<_> = manifest
+            .groups
+            .iter()
+            .flat_map(|group| group.secrets.iter().cloned())
+            .collect();
+
+        // Every manifest entry needs a complete pair of records.
+        for secret_path in &manifest_paths {
+            if !enc_paths.contains(secret_path) {
+                issues.push(CheckIssue::Error(format!(
+                    "Secret '{secret_path}' listed in manifest but .enc file missing"
+                )));
+            }
+            if !meta_paths.contains(secret_path) {
+                issues.push(CheckIssue::Error(format!(
+                    "Secret '{secret_path}' listed in manifest but .meta file missing"
+                )));
             }
         }
 
-        // Check for missing .enc files referenced in manifest
-        for group in &manifest.groups {
-            for secret_path in &group.secrets {
-                let enc_path = self.paths.secret_enc_file(secret_path);
-                if !enc_path.exists() {
+        // Records not authorized by the manifest are retained as warnings for manual recovery.
+        for secret_path in enc_paths.difference(&manifest_paths) {
+            issues.push(CheckIssue::Warning(format!(
+                "Orphaned .enc record: {secret_path}"
+            )));
+        }
+        for secret_path in meta_paths.difference(&manifest_paths) {
+            issues.push(CheckIssue::Warning(format!(
+                "Orphaned .meta record: {secret_path}"
+            )));
+        }
+
+        // Metadata is the readable record of the manifest relationship. Invalid metadata is an
+        // integrity error, but it should not prevent check from reporting the remaining records.
+        let mut metadata_for_expiry = vec![];
+        for (secret_path, metadata_path) in meta_records {
+            let metadata = match SecretMetadata::load(&metadata_path) {
+                Ok(metadata) => metadata,
+                Err(error) => {
                     issues.push(CheckIssue::Error(format!(
-                        "Secret '{secret_path}' listed in manifest but .enc file missing"
+                        "Invalid metadata for secret '{secret_path}': {error}"
                     )));
+                    continue;
                 }
+            };
+            metadata_for_expiry.push(metadata);
+
+            if !manifest_paths.contains(&secret_path) {
+                continue;
+            }
+            if metadata_for_expiry.last().unwrap().name != secret_path {
+                issues.push(CheckIssue::Error(format!(
+                    "Secret '{secret_path}' metadata name does not match its path"
+                )));
+            }
+            let metadata = metadata_for_expiry.last().unwrap();
+            let group_contains_secret = manifest
+                .groups
+                .iter()
+                .any(|group| group.name == metadata.group && group.secrets.contains(&secret_path));
+            if !group_contains_secret {
+                issues.push(CheckIssue::Error(format!(
+                    "Secret '{secret_path}' metadata group '{}' is not authorized by the manifest",
+                    metadata.group
+                )));
+            }
+
+            let expected_agents: BTreeSet<_> = manifest
+                .authorized_agents_for_secret(&secret_path)
+                .into_iter()
+                .collect();
+            let metadata_agents: BTreeSet<_> = metadata.authorized_agents.iter().cloned().collect();
+            if !expected_agents.is_subset(&metadata_agents) {
+                issues.push(CheckIssue::Error(format!(
+                    "Secret '{secret_path}' metadata authorized agents do not include all manifest-authorized agents"
+                )));
+            }
+            let known_agents: BTreeSet<_> = manifest
+                .agents
+                .iter()
+                .map(|agent| agent.name.clone())
+                .collect();
+            if !metadata_agents.is_subset(&known_agents) {
+                issues.push(CheckIssue::Error(format!(
+                    "Secret '{secret_path}' metadata authorized agents include agents absent from the manifest"
+                )));
             }
         }
 
@@ -645,9 +744,8 @@ impl Vault {
         }
 
         // Check for expiring credentials
-        let secrets = self.list_secrets(None)?;
         let now = chrono::Utc::now();
-        for meta in &secrets {
+        for meta in &metadata_for_expiry {
             if let Some(expires) = meta.expires {
                 let days_until = (expires - now).num_days();
                 if days_until < 0 {

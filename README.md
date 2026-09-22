@@ -331,7 +331,7 @@ Run `agent-vault <command> --help` for full arguments.
 | `grant <agent> <group>` | Add a group membership and re-encrypt affected secrets. |
 | `revoke <agent> <group>` | Remove a group membership and re-encrypt affected secrets. |
 | `remove-agent <name>` | Remove the agent and re-encrypt secrets in its assigned groups. |
-| `check [--json]` | Check expiry, missing/orphaned files, and vault consistency. Errors produce a nonzero exit status. |
+| `check [--json]` | Audit expiry and vault integrity: recursively verify manifest secrets have `.enc` and `.meta` records, flag orphaned records, and validate metadata path, group, and authorized-agent relationships. Errors produce a nonzero exit status. |
 | `restore-agent <name> --to <file>` | Restore an escrowed private key to a file. |
 | `recover-agent <name>` | Replace an agent keypair and re-encrypt its group secrets. |
 | `completions <shell>` | Generate shell completion definitions. |

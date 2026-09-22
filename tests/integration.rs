@@ -5,6 +5,7 @@ use std::sync::Mutex;
 use secrecy::ExposeSecret;
 use tempfile::TempDir;
 
+use agent_vault::core::metadata::SecretMetadata;
 use agent_vault::core::vault::{CheckIssue, Vault};
 
 // Global mutex to serialize tests that modify HOME env var.
@@ -476,6 +477,99 @@ fn test_check_agent_no_access() {
         _ => false,
     });
     assert!(has_no_access_warning);
+}
+
+#[test]
+fn test_check_recursively_reports_missing_secret_counterparts() {
+    let _lock = HOME_LOCK.lock().unwrap();
+    let (_tmp, root) = setup_git_repo();
+    let vault = Vault::init(&root).unwrap();
+    vault
+        .set_secret("apps/prod/token", "synthetic-token", "apps", None, None)
+        .unwrap();
+
+    fs::remove_file(root.join(".agent-vault/secrets/apps/prod/token.enc")).unwrap();
+    fs::remove_file(root.join(".agent-vault/secrets/apps/prod/token.meta")).unwrap();
+
+    let issues = vault.check().unwrap();
+    let errors: Vec<_> = issues
+        .iter()
+        .filter_map(|issue| match issue {
+            CheckIssue::Error(message) => Some(message.as_str()),
+            CheckIssue::Warning(_) => None,
+        })
+        .collect();
+    assert!(errors.iter().any(|message| {
+        message.contains("apps/prod/token") && message.contains(".enc file missing")
+    }));
+    assert!(errors.iter().any(|message| {
+        message.contains("apps/prod/token") && message.contains(".meta file missing")
+    }));
+}
+
+#[test]
+fn test_check_recursively_warns_about_orphaned_enc_and_meta_records() {
+    let _lock = HOME_LOCK.lock().unwrap();
+    let (_tmp, root) = setup_git_repo();
+    let vault = Vault::init(&root).unwrap();
+    let orphan_dir = root.join(".agent-vault/secrets/orphan/nested");
+    fs::create_dir_all(&orphan_dir).unwrap();
+    fs::write(orphan_dir.join("value.enc"), "synthetic ciphertext").unwrap();
+    SecretMetadata::new("orphan/nested/value", "orphan", vec![])
+        .save(&orphan_dir.join("value.meta"))
+        .unwrap();
+
+    let issues = vault.check().unwrap();
+    let warnings: Vec<_> = issues
+        .iter()
+        .filter_map(|issue| match issue {
+            CheckIssue::Warning(message) => Some(message.as_str()),
+            CheckIssue::Error(_) => None,
+        })
+        .collect();
+    assert!(warnings.iter().any(|message| {
+        message.contains("Orphaned .enc record") && message.contains("orphan/nested/value")
+    }));
+    assert!(warnings.iter().any(|message| {
+        message.contains("Orphaned .meta record") && message.contains("orphan/nested/value")
+    }));
+}
+
+#[test]
+fn test_check_reports_metadata_path_group_and_authorization_mismatches() {
+    let _lock = HOME_LOCK.lock().unwrap();
+    let (_tmp, root) = setup_git_repo();
+    let vault = Vault::init(&root).unwrap();
+    vault.add_agent("bot1").unwrap();
+    vault
+        .set_secret("apps/prod/token", "synthetic-token", "apps", None, None)
+        .unwrap();
+    vault.grant_agent("bot1", "apps").unwrap();
+
+    let meta_path = root.join(".agent-vault/secrets/apps/prod/token.meta");
+    let mut metadata = SecretMetadata::load(&meta_path).unwrap();
+    metadata.name = "apps/prod/other-token".to_string();
+    metadata.group = "other-group".to_string();
+    metadata.authorized_agents = vec![];
+    metadata.save(&meta_path).unwrap();
+
+    let issues = vault.check().unwrap();
+    let errors: Vec<_> = issues
+        .iter()
+        .filter_map(|issue| match issue {
+            CheckIssue::Error(message) => Some(message.as_str()),
+            CheckIssue::Warning(_) => None,
+        })
+        .collect();
+    assert!(errors
+        .iter()
+        .any(|message| message.contains("metadata name")));
+    assert!(errors
+        .iter()
+        .any(|message| message.contains("metadata group")));
+    assert!(errors
+        .iter()
+        .any(|message| message.contains("authorized agents")));
 }
 
 // ---- --agents flag tests ----
