@@ -132,6 +132,36 @@ fn test_multiple_secrets() {
 }
 
 #[test]
+fn test_list_secrets_includes_nested_records_and_honors_group_filter() {
+    let _lock = HOME_LOCK.lock().unwrap();
+    let (_tmp, root) = setup_git_repo();
+    let vault = Vault::init(&root).unwrap();
+
+    vault
+        .set_secret("apps/prod/api-token", "synthetic-token", "apps", None, None)
+        .unwrap();
+    vault
+        .set_secret("other/top-level", "synthetic-other", "other", None, None)
+        .unwrap();
+
+    let all_names: Vec<_> = vault
+        .list_secrets(None)
+        .unwrap()
+        .into_iter()
+        .map(|metadata| metadata.name)
+        .collect();
+    assert_eq!(all_names, vec!["apps/prod/api-token", "other/top-level"]);
+
+    let apps_names: Vec<_> = vault
+        .list_secrets(Some("apps"))
+        .unwrap()
+        .into_iter()
+        .map(|metadata| metadata.name)
+        .collect();
+    assert_eq!(apps_names, vec!["apps/prod/api-token"]);
+}
+
+#[test]
 fn test_vault_commit_preserves_unrelated_staged_file() {
     let _lock = HOME_LOCK.lock().unwrap();
     let (_tmp, root) = setup_git_repo();

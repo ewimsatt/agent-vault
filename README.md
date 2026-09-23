@@ -327,7 +327,7 @@ Run `agent-vault <command> --help` for full arguments.
 | `set <path> <value>` | Write a text secret; the first path component supplies the default group. |
 | `set <path> --from-file <file>` | Read a text secret from a caller-managed file. Supports `--group`, `--expires`, and additional recipient agents via `--agents`. |
 | `get <path> [--key <file>]` | Sync when applicable and print the decrypted value to stdout. |
-| `list [--group <name>] [--json]` | Inspect secret metadata without decryption. |
+| `list [--group <name>] [--json]` | Inspect metadata for every secret in the vault, including nested paths; optionally filter by its top-level group. No decryption occurs. |
 | `grant <agent> <group>` | Add a group membership and re-encrypt affected secrets. |
 | `revoke <agent> <group>` | Remove a group membership and re-encrypt affected secrets. |
 | `remove-agent <name>` | Remove the agent and re-encrypt secrets in its assigned groups. |

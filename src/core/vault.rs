@@ -338,15 +338,21 @@ impl Vault {
                     continue;
                 }
             }
-            for file_entry in std::fs::read_dir(group_entry.path())? {
-                let file_entry = file_entry?;
-                let fname = file_entry.file_name().to_string_lossy().to_string();
-                if fname.ends_with(".meta") {
-                    let meta = SecretMetadata::load(&file_entry.path())?;
-                    results.push(meta);
-                }
+
+            let mut enc_records = vec![];
+            let mut meta_records = vec![];
+            let group_dir = group_entry.path();
+            discover_secret_records(
+                &group_dir,
+                &secrets_dir,
+                &mut enc_records,
+                &mut meta_records,
+            )?;
+            for (_, metadata_path) in meta_records {
+                results.push(SecretMetadata::load(&metadata_path)?);
             }
         }
+        results.sort_by(|left, right| left.name.cmp(&right.name));
         Ok(results)
     }
 
