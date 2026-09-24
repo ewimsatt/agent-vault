@@ -353,9 +353,11 @@ Regardless of backend, the escrow copy in the repository always exists as the re
 
 The tool must install a Git pre-commit hook during `agent-vault init` that:
 
-- Scans all staged files for unencrypted private key material (age private key headers, raw key patterns)
-- Blocks the commit if any unencrypted key material is detected
-- Can be bypassed with `--no-verify` (standard Git escape hatch, but the user accepts the risk)
+- Resolves Git's effective hook path, including `core.hooksPath`, and scans staged index blobs for unencrypted private key material (age private key headers and raw key patterns)
+- Blocks the commit if any marker is detected or the staged-index scan cannot complete
+- Runs the staged-index scan both before and after any preserved executable custom hook, so custom staging cannot bypass the check
+- Preserves a preexisting regular executable hook byte-for-byte in a sidecar and propagates its status only after the final scan; refuses ambiguous legacy, symlink, non-regular, malformed managed, or sidecar-conflict states without overwriting them
+- Can be bypassed with `--no-verify` (standard Git escape hatch, but the user accepts the risk); it is a local guardrail, not a defense against a malicious local hook or host
 
 ### .gitignore
 
