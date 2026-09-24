@@ -451,7 +451,9 @@ fn write_wrapper_atomically(path: &Path, bytes: &[u8]) -> Result<(), VaultError>
         .set_permissions(fs::Permissions::from_mode(0o755))?;
     temporary.write_all(bytes)?;
     temporary.as_file().sync_all()?;
-    temporary.persist(path).map_err(|error| error.error)?;
+    let installed = temporary.persist(path).map_err(|error| error.error)?;
+    installed.sync_all()?;
+    drop(installed);
     Ok(())
 }
 
