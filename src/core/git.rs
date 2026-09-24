@@ -542,7 +542,8 @@ mod tests {
         std::fs::write(&path, "AGE-SECRET-KEY-SYNTHETIC-UNSTAGED\n").unwrap();
 
         install_pre_commit_hook(&repo).unwrap();
-        let output = Command::new(repo.path().join("hooks/pre-commit"))
+        let output = Command::new("sh")
+            .arg(repo.path().join("hooks/pre-commit"))
             .current_dir(dir.path())
             .output()
             .unwrap();
@@ -565,7 +566,8 @@ mod tests {
         index.write().unwrap();
 
         install_pre_commit_hook(&repo).unwrap();
-        let output = Command::new(repo.path().join("hooks/pre-commit"))
+        let output = Command::new("sh")
+            .arg(repo.path().join("hooks/pre-commit"))
             .current_dir(dir.path())
             .output()
             .unwrap();
@@ -594,7 +596,8 @@ mod tests {
         index.add_path(Path::new("marker.txt")).unwrap();
         index.write().unwrap();
         install_pre_commit_hook(&repo).unwrap();
-        let output = Command::new(&hook)
+        let output = Command::new("sh")
+            .arg(&hook)
             .current_dir(dir.path())
             .output()
             .unwrap();
@@ -621,7 +624,8 @@ mod tests {
         std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         install_pre_commit_hook(&repo).unwrap();
-        let output = Command::new(&hook)
+        let output = Command::new("sh")
+            .arg(&hook)
             .current_dir(dir.path())
             .output()
             .unwrap();
@@ -677,7 +681,8 @@ mod tests {
         std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         install_pre_commit_hook(&repo).unwrap();
-        let output = Command::new(&hook)
+        let output = Command::new("sh")
+            .arg(&hook)
             .current_dir(dir.path())
             .output()
             .unwrap();
@@ -748,7 +753,8 @@ mod tests {
         std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         install_pre_commit_hook(&repo).unwrap();
-        let output = Command::new(&hook)
+        let output = Command::new("sh")
+            .arg(&hook)
             .current_dir(dir.path())
             .output()
             .unwrap();
