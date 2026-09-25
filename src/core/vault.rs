@@ -21,6 +21,13 @@ pub enum IdentityKeySource {
     Raw(SecretString),
 }
 
+struct PreparedSecret {
+    enc_path: PathBuf,
+    ciphertext: Vec<u8>,
+    meta_path: PathBuf,
+    metadata: Vec<u8>,
+}
+
 fn discover_secret_records(
     directory: &Path,
     root: &Path,
@@ -316,7 +323,10 @@ impl Vault {
     }
 
     /// List all secrets, optionally filtered by group.
-    pub fn list_secrets(&self, group_filter: Option<&str>) -> Result<Vec<SecretMetadata>, VaultError> {
+    pub fn list_secrets(
+        &self,
+        group_filter: Option<&str>,
+    ) -> Result<Vec<SecretMetadata>, VaultError> {
         if let Some(group) = group_filter {
             identifiers::validate_group(group)?;
         }
@@ -356,49 +366,70 @@ impl Vault {
         Ok(results)
     }
 
-    /// Re-encrypt a single secret for its current set of authorized recipients.
-    /// Decrypts with the owner key, then re-encrypts for owner + all currently authorized agents.
-    fn re_encrypt_secret(
+
+    /// Read, decrypt, and prepare every affected record before lifecycle writes begin.
+    fn prepare_re_encrypted_secrets(
         &self,
-        secret_path: &str,
+        secret_paths: &[String],
         manifest: &Manifest,
-    ) -> Result<Vec<PathBuf>, VaultError> {
-        identifiers::validate_secret_path(secret_path)?;
-        let owner_key_path = paths::owner_key_path();
-        let owner_private = keys::load_private_key(&owner_key_path)?;
+        replacement_public_key: Option<(&str, &str)>,
+    ) -> Result<Vec<PreparedSecret>, VaultError> {
+        let secret_paths: BTreeSet<_> = secret_paths.iter().cloned().collect();
+        if secret_paths.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let owner_private = keys::load_private_key(&paths::owner_key_path())?;
         let owner_identity = crypto::parse_identity(owner_private.expose_secret())?;
+        let owner_public = keys::load_public_key(&self.paths.owner_pub_file())?;
+        let mut prepared = Vec::with_capacity(secret_paths.len());
 
-        let enc_path = self.paths.secret_enc_file(secret_path);
-        let ciphertext = std::fs::read(&enc_path)?;
-        let plaintext = crypto::decrypt(&ciphertext, &owner_identity)?;
+        for secret_path in secret_paths {
+            identifiers::validate_secret_path(&secret_path)?;
+            let enc_path = self.paths.secret_enc_file(&secret_path);
+            let plaintext = crypto::decrypt(&std::fs::read(&enc_path)?, &owner_identity)?;
 
-        // Build new recipient list: owner + authorized agents
-        let mut recipients = vec![];
-        let owner_pub_str = keys::load_public_key(&self.paths.owner_pub_file())?;
-        recipients.push(crypto::parse_recipient(&owner_pub_str)?);
-
-        let authorized = manifest.authorized_agents_for_secret(secret_path);
-        for agent_name in &authorized {
-            let pub_path = self.paths.agent_pub_file(agent_name);
-            if pub_path.exists() {
-                let pub_str = keys::load_public_key(&pub_path)?;
-                recipients.push(crypto::parse_recipient(&pub_str)?);
+            let authorized = manifest.authorized_agents_for_secret(&secret_path);
+            let mut recipients = vec![crypto::parse_recipient(&owner_public)?];
+            for agent_name in &authorized {
+                let public_key = match replacement_public_key {
+                    Some((replacement_name, public_key)) if agent_name == replacement_name => {
+                        public_key.to_string()
+                    }
+                    _ => keys::load_public_key(&self.paths.agent_pub_file(agent_name))?,
+                };
+                recipients.push(crypto::parse_recipient(&public_key)?);
             }
-        }
 
-        let new_ciphertext = crypto::encrypt(plaintext.expose_secret().as_bytes(), &recipients)?;
-        std::fs::write(&enc_path, &new_ciphertext)?;
-
-        // Update metadata
-        let meta_path = self.paths.secret_meta_file(secret_path);
-        if meta_path.exists() {
+            let meta_path = self.paths.secret_meta_file(&secret_path);
             let mut meta = SecretMetadata::load(&meta_path)?;
-            meta.authorized_agents = authorized;
+            meta.authorized_agents = authorized.clone();
             meta.rotated = chrono::Utc::now();
-            meta.save(&meta_path)?;
+            let metadata = serde_yaml::to_string(&meta)?.into_bytes();
+            prepared.push(PreparedSecret {
+                enc_path,
+                ciphertext: crypto::encrypt(plaintext.expose_secret().as_bytes(), &recipients)?,
+                meta_path,
+                metadata,
+            });
         }
+        Ok(prepared)
+    }
 
-        Ok(vec![enc_path, meta_path])
+    fn write_prepared_secrets(prepared: &[PreparedSecret]) -> Result<Vec<PathBuf>, VaultError> {
+        let mut changed_files = Vec::with_capacity(prepared.len() * 2);
+        for record in prepared {
+            std::fs::write(&record.enc_path, &record.ciphertext)?;
+            std::fs::write(&record.meta_path, &record.metadata)?;
+            changed_files.push(record.enc_path.clone());
+            changed_files.push(record.meta_path.clone());
+        }
+        Ok(changed_files)
+    }
+
+    fn sort_and_deduplicate_paths(paths: &mut Vec<PathBuf>) {
+        paths.sort();
+        paths.dedup();
     }
 
     /// Grant an agent access to a group. Re-encrypts all secrets in that group.
@@ -410,17 +441,15 @@ impl Vault {
         identifiers::validate_agent(agent_name)?;
         identifiers::validate_group(group_name)?;
         let mut manifest = Manifest::load(&self.paths.manifest_file())?;
-        manifest.grant(agent_name, group_name)?;
-
         let secret_paths = manifest.secrets_in_group(group_name);
+        manifest.grant(agent_name, group_name)?;
+        let prepared = self.prepare_re_encrypted_secrets(&secret_paths, &manifest, None)?;
+
+        // No lifecycle file has been written until every affected record is prepared.
         let mut changed_files = vec![self.paths.manifest_file()];
-
-        for sp in &secret_paths {
-            let mut files = self.re_encrypt_secret(sp, &manifest)?;
-            changed_files.append(&mut files);
-        }
-
+        changed_files.extend(Self::write_prepared_secrets(&prepared)?);
         manifest.save(&self.paths.manifest_file())?;
+        Self::sort_and_deduplicate_paths(&mut changed_files);
 
         let repo = git::open_repo(self.paths.root())?;
         git::commit_files(
@@ -442,17 +471,15 @@ impl Vault {
         identifiers::validate_agent(agent_name)?;
         identifiers::validate_group(group_name)?;
         let mut manifest = Manifest::load(&self.paths.manifest_file())?;
-        manifest.revoke(agent_name, group_name)?;
-
         let secret_paths = manifest.secrets_in_group(group_name);
+        manifest.revoke(agent_name, group_name)?;
+        let prepared = self.prepare_re_encrypted_secrets(&secret_paths, &manifest, None)?;
+
+        // No lifecycle file has been written until every affected record is prepared.
         let mut changed_files = vec![self.paths.manifest_file()];
-
-        for sp in &secret_paths {
-            let mut files = self.re_encrypt_secret(sp, &manifest)?;
-            changed_files.append(&mut files);
-        }
-
+        changed_files.extend(Self::write_prepared_secrets(&prepared)?);
         manifest.save(&self.paths.manifest_file())?;
+        Self::sort_and_deduplicate_paths(&mut changed_files);
 
         let repo = git::open_repo(self.paths.root())?;
         git::commit_files(
@@ -470,29 +497,27 @@ impl Vault {
     pub fn remove_agent(&self, name: &str) -> Result<Vec<String>, VaultError> {
         identifiers::validate_agent(name)?;
         let mut manifest = Manifest::load(&self.paths.manifest_file())?;
-        let groups = manifest.remove_agent(name)?;
+        let groups = manifest
+            .agent_groups(name)
+            .ok_or_else(|| VaultError::AgentNotFound(name.to_string()))?;
+        let all_secret_paths: Vec<_> = groups
+            .iter()
+            .flat_map(|group_name| manifest.secrets_in_group(group_name))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        manifest.remove_agent(name)?;
+        let prepared = self.prepare_re_encrypted_secrets(&all_secret_paths, &manifest, None)?;
 
-        // Collect all secrets that need re-encryption
-        let mut all_secret_paths = vec![];
-        for group_name in &groups {
-            for sp in manifest.secrets_in_group(group_name) {
-                if !all_secret_paths.contains(&sp) {
-                    all_secret_paths.push(sp);
-                }
-            }
-        }
-
+        // No lifecycle file has been written until every affected record is prepared.
         let mut changed_files = vec![
             self.paths.manifest_file(),
             self.paths.agent_pub_file(name),
             self.paths.agent_escrow_file(name),
         ];
-        for sp in &all_secret_paths {
-            let mut files = self.re_encrypt_secret(sp, &manifest)?;
-            changed_files.append(&mut files);
-        }
-
+        changed_files.extend(Self::write_prepared_secrets(&prepared)?);
         manifest.save(&self.paths.manifest_file())?;
+        Self::sort_and_deduplicate_paths(&mut changed_files);
 
         // Remove agent directory from disk before committing its tracked deletions.
         let agent_dir = self.paths.agent_dir(name);
@@ -526,33 +551,36 @@ impl Vault {
             .agent_groups(name)
             .ok_or_else(|| VaultError::AgentNotFound(name.to_string()))?;
 
-        // Generate new keypair
+        // Generate replacement key material and prepare every output before any lifecycle write.
         let (new_secret, new_public) = crypto::generate_keypair();
+        let owner_public = keys::load_public_key(&self.paths.owner_pub_file())?;
+        let owner_recipient = crypto::parse_recipient(&owner_public)?;
+        let new_escrow =
+            crypto::encrypt(new_secret.expose_secret().as_bytes(), &[owner_recipient])?;
+        let secret_paths: Vec<_> = agent_groups
+            .iter()
+            .flat_map(|group_name| manifest.secrets_in_group(group_name))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let prepared = self.prepare_re_encrypted_secrets(
+            &secret_paths,
+            &manifest,
+            Some((name, new_public.as_str())),
+        )?;
 
-        // Save new private key locally
+        // All affected records and replacement key material preflighted successfully.
         let new_key_path = paths::agent_key_path(name);
         keys::save_private_key(&new_key_path, &new_secret)?;
-
-        // Update public key in repo
         keys::save_public_key(&self.paths.agent_pub_file(name), &new_public)?;
-
-        // Create new escrow
-        let owner_pub = keys::load_public_key(&self.paths.owner_pub_file())?;
-        keys::create_escrow(&new_secret, &owner_pub, &self.paths.agent_escrow_file(name))?;
-
-        // Re-encrypt all secrets this agent has access to.
+        std::fs::write(self.paths.agent_escrow_file(name), new_escrow)?;
 
         let mut changed_files = vec![
             self.paths.agent_pub_file(name),
             self.paths.agent_escrow_file(name),
         ];
-
-        for group_name in &agent_groups {
-            for sp in manifest.secrets_in_group(group_name) {
-                let mut files = self.re_encrypt_secret(&sp, &manifest)?;
-                changed_files.append(&mut files);
-            }
-        }
+        changed_files.extend(Self::write_prepared_secrets(&prepared)?);
+        Self::sort_and_deduplicate_paths(&mut changed_files);
 
         let repo = git::open_repo(self.paths.root())?;
         git::commit_files(
@@ -796,7 +824,9 @@ impl Vault {
         if let Ok(env_key) = std::env::var("AGENT_VAULT_KEY") {
             let trimmed = env_key.trim();
             if trimmed.starts_with("AGE-SECRET-KEY-") {
-                return Ok(IdentityKeySource::Raw(SecretString::from(trimmed.to_string())));
+                return Ok(IdentityKeySource::Raw(SecretString::from(
+                    trimmed.to_string(),
+                )));
             }
 
             let p = PathBuf::from(&env_key);

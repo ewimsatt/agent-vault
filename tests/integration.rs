@@ -239,6 +239,41 @@ fn test_vault_commit_rejects_pre_commit_hook_that_stages_unrelated_file() {
 // ---- Grant / Revoke tests ----
 
 #[test]
+fn test_grant_preflight_failure_leaves_earlier_secret_and_manifest_unchanged() {
+    let _lock = HOME_LOCK.lock().unwrap();
+    let (_tmp, root) = setup_git_repo();
+    let vault = Vault::init(&root).unwrap();
+    vault.add_agent("bot1").unwrap();
+    vault
+        .set_secret("stripe/a-first", "synthetic-first", "stripe", None, None)
+        .unwrap();
+    vault
+        .set_secret("stripe/z-later", "synthetic-later", "stripe", None, None)
+        .unwrap();
+
+    let first_enc = root.join(".agent-vault/secrets/stripe/a-first.enc");
+    let first_meta = root.join(".agent-vault/secrets/stripe/a-first.meta");
+    let manifest = root.join(".agent-vault/manifest.yaml");
+    let before_enc = fs::read(&first_enc).unwrap();
+    let before_meta = fs::read(&first_meta).unwrap();
+    let before_manifest = fs::read(&manifest).unwrap();
+    let repo = git2::Repository::open(&root).unwrap();
+    let before_head = repo.head().unwrap().target().unwrap();
+
+    fs::write(
+        root.join(".agent-vault/secrets/stripe/z-later.enc"),
+        "not a valid age ciphertext",
+    )
+    .unwrap();
+
+    assert!(vault.grant_agent("bot1", "stripe").is_err());
+    assert_eq!(fs::read(&first_enc).unwrap(), before_enc);
+    assert_eq!(fs::read(&first_meta).unwrap(), before_meta);
+    assert_eq!(fs::read(&manifest).unwrap(), before_manifest);
+    assert_eq!(repo.head().unwrap().target().unwrap(), before_head);
+}
+
+#[test]
 fn test_grant_enables_agent_access() {
     let _lock = HOME_LOCK.lock().unwrap();
     let (_tmp, root) = setup_git_repo();
@@ -461,6 +496,50 @@ fn test_recover_agent_new_keypair() {
         vault.get_secret("stripe/api-key", &owner_key).unwrap().expose_secret(),
         "sk_123"
     );
+}
+
+#[test]
+fn test_recover_preflight_failure_leaves_key_and_earlier_records_unchanged() {
+    let _lock = HOME_LOCK.lock().unwrap();
+    let (_tmp, root) = setup_git_repo();
+    let vault = Vault::init(&root).unwrap();
+    let agent_key = vault.add_agent("bot1").unwrap();
+    vault
+        .set_secret("stripe/a-first", "synthetic-first", "stripe", None, None)
+        .unwrap();
+    vault
+        .set_secret("stripe/z-later", "synthetic-later", "stripe", None, None)
+        .unwrap();
+    vault.grant_agent("bot1", "stripe").unwrap();
+
+    let first_enc = root.join(".agent-vault/secrets/stripe/a-first.enc");
+    let first_meta = root.join(".agent-vault/secrets/stripe/a-first.meta");
+    let public_key = root.join(".agent-vault/agents/bot1/public.key");
+    let escrow = root.join(".agent-vault/agents/bot1/private.key.escrow");
+    let manifest = root.join(".agent-vault/manifest.yaml");
+    let before_key = fs::read(&agent_key).unwrap();
+    let before_enc = fs::read(&first_enc).unwrap();
+    let before_meta = fs::read(&first_meta).unwrap();
+    let before_public = fs::read(&public_key).unwrap();
+    let before_escrow = fs::read(&escrow).unwrap();
+    let before_manifest = fs::read(&manifest).unwrap();
+    let repo = git2::Repository::open(&root).unwrap();
+    let before_head = repo.head().unwrap().target().unwrap();
+
+    fs::write(
+        root.join(".agent-vault/secrets/stripe/z-later.enc"),
+        "not a valid age ciphertext",
+    )
+    .unwrap();
+
+    assert!(vault.recover_agent("bot1").is_err());
+    assert_eq!(fs::read(&agent_key).unwrap(), before_key);
+    assert_eq!(fs::read(&first_enc).unwrap(), before_enc);
+    assert_eq!(fs::read(&first_meta).unwrap(), before_meta);
+    assert_eq!(fs::read(&public_key).unwrap(), before_public);
+    assert_eq!(fs::read(&escrow).unwrap(), before_escrow);
+    assert_eq!(fs::read(&manifest).unwrap(), before_manifest);
+    assert_eq!(repo.head().unwrap().target().unwrap(), before_head);
 }
 
 #[test]
