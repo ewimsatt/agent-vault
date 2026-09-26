@@ -23,3 +23,7 @@ class NotAuthorizedError(VaultError):
 
 class ManifestError(VaultError):
     """Error parsing or querying the manifest."""
+
+
+class GitSyncError(VaultError):
+    """A required safe Git synchronization could not complete."""

@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from agent_vault import (
+    GitSyncError,
     InvalidIdentifierError,
     NotAuthorizedError,
     SecretNotFoundError,
@@ -318,26 +319,63 @@ class TestMultipleSecrets:
 
 
 class TestPullWarnings:
-    def test_pull_warns_on_failure(self, vault_env, capsys):
-        """Pull failure logs to stderr instead of silently swallowing."""
-        import shutil
+    def test_pull_rejects_dirty_checkout_without_reading_stale_state(self, vault_env):
+        """Automatic sync fails closed rather than silently reading a dirty checkout."""
 
         vault = Vault(
             repo_path=vault_env["repo"],
             key_path=vault_env["owner_key"],
             auto_pull=False,
         )
-        # Break git by temporarily renaming .git
-        git_dir = vault_env["repo"] / ".git"
-        git_dir_backup = vault_env["repo"] / ".git_backup"
-        shutil.move(str(git_dir), str(git_dir_backup))
+        original_head = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=vault_env["repo"], text=True
+        ).strip()
+        branch = subprocess.check_output(
+            ["git", "branch", "--show-current"], cwd=vault_env["repo"], text=True
+        ).strip()
+        remote = vault_env["repo"].parent / "remote.git"
+        subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+        subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=vault_env["repo"], check=True)
+        subprocess.run(["git", "push", "-u", "origin", branch], cwd=vault_env["repo"], check=True, capture_output=True)
+        tracked_file = vault_env["repo"] / ".agent-vault" / "manifest.yaml"
+        original_bytes = tracked_file.read_bytes()
+        tracked_file.write_text("version: 999\n")
 
-        try:
-            vault.pull()  # Should warn, not raise
-            captured = capsys.readouterr()
-            assert "Warning" in captured.err
-        finally:
-            shutil.move(str(git_dir_backup), str(git_dir))
+        with pytest.raises(GitSyncError):
+            vault.pull()
+
+        assert subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=vault_env["repo"], text=True
+        ).strip() == original_head
+        assert tracked_file.read_bytes() == b"version: 999\n"
+        assert original_bytes != tracked_file.read_bytes()
+
+    def test_pull_fast_forwards_a_clean_tracking_checkout(self, vault_env):
+        """Automatic sync advances a clean checkout to its origin tracking branch."""
+        remote = vault_env["repo"].parent / "remote-fast-forward.git"
+        subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=vault_env["repo"], check=True, capture_output=True)
+        subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+        branch = subprocess.check_output(
+            ["git", "branch", "--show-current"], cwd=vault_env["repo"], text=True
+        ).strip()
+        subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=vault_env["repo"], check=True)
+        subprocess.run(["git", "push", "-u", "origin", branch], cwd=vault_env["repo"], check=True, capture_output=True)
+        updater = vault_env["repo"].parent / "updater"
+        subprocess.run(["git", "clone", str(remote), str(updater)], check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@agent-vault.invalid"], cwd=updater, check=True)
+        subprocess.run(["git", "config", "user.name", "Agent Vault test"], cwd=updater, check=True)
+        (updater / ".agent-vault" / "manifest.yaml").write_text("version: 2\n")
+        subprocess.run(["git", "add", ".agent-vault/manifest.yaml"], cwd=updater, check=True)
+        subprocess.run(["git", "commit", "-m", "remote update"], cwd=updater, check=True, capture_output=True)
+        subprocess.run(["git", "push"], cwd=updater, check=True, capture_output=True)
+        status = subprocess.check_output(
+            ["git", "status", "--porcelain", "--untracked-files=all"], cwd=vault_env["repo"], text=True
+        )
+        assert not status, status
+
+        vault = Vault(repo_path=vault_env["repo"], key_path=vault_env["owner_key"], auto_pull=False)
+        vault.pull()
+        assert (vault_env["repo"] / ".agent-vault" / "manifest.yaml").read_text() == "version: 2\n"
 
 
 class TestResolveRepoPath:
@@ -368,6 +406,27 @@ class TestResolveRepoPath:
                 pass  # Expected — can't actually clone
             except Exception:
                 pass  # Network error is also fine
+
+    def test_url_clone_uses_a_nonexistent_temporary_checkout(self, tmp_path, monkeypatch):
+        """A failed remote clone cannot publish a partial cache directory."""
+        from agent_vault import vault as vault_module
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        temporary_parent = tmp_path / "temporary-parent"
+        temporary_parent.mkdir()
+        monkeypatch.setattr(vault_module.tempfile, "mkdtemp", lambda **_: str(temporary_parent))
+
+        def fake_git(cwd, *args, **_):
+            destination = Path(args[-1])
+            assert not destination.exists()
+            destination.mkdir()
+            (destination / ".git").mkdir()
+            return subprocess.CompletedProcess(["git", *args], 0, "", "")
+
+        monkeypatch.setattr(vault_module, "_run_git", fake_git)
+        cache_dir = vault_module._resolve_repo_path("https://example.invalid/vault.git")
+        assert (cache_dir / ".git").is_dir()
+        assert not temporary_parent.exists()
 
     def test_relative_path_not_url(self):
         """Relative paths are not treated as URLs."""

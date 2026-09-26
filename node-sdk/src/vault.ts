@@ -6,7 +6,7 @@
  */
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import * as age from "age-encryption";
@@ -14,6 +14,7 @@ import {
   VaultNotFoundError,
   SecretNotFoundError,
   InvalidIdentifierError,
+  GitSyncError,
   NotAuthorizedError,
 } from "./errors.js";
 import { Manifest } from "./manifest.js";
@@ -87,6 +88,57 @@ export function validateSecretPath(secretPath: unknown): asserts secretPath is s
   if (secretPath.split("/").some((component) => component === "" || component === "." || component === "..")) {
     throw new InvalidIdentifierError(`invalid secret path: ${JSON.stringify(secretPath)}`);
   }
+}
+
+const gitEnvironment = (): NodeJS.ProcessEnv => {
+  const environment = { ...process.env };
+  for (const name of Object.keys(environment)) {
+    if (name.startsWith("GIT_")) delete environment[name];
+  }
+  return environment;
+};
+
+function runGit(repoPath: string, args: string[], allowFailure = false): string | null {
+  try {
+    return execFileSync("git", args, {
+      cwd: repoPath, env: gitEnvironment(), encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"], timeout: 30_000,
+    });
+  } catch {
+    if (allowFailure) return null;
+    throw new GitSyncError("vault Git synchronization failed");
+  }
+}
+
+function safeSync(repoPath: string): void {
+  const remotes = runGit(repoPath, ["remote"])!.split("\n");
+  if (!remotes.includes("origin")) return;
+  runGit(repoPath, ["remote", "get-url", "origin"]);
+  if (runGit(repoPath, ["status", "--porcelain", "--untracked-files=all"])!.trim()) {
+    throw new GitSyncError("refusing to synchronize a vault with local changes or untracked files");
+  }
+  const branch = (runGit(repoPath, ["symbolic-ref", "--quiet", "--short", "HEAD"], true) ?? "").trim();
+  if (!branch) throw new GitSyncError("refusing to synchronize a detached or unborn vault branch");
+  const remote = (runGit(repoPath, ["config", "--get", `branch.${branch}.remote`], true) ?? "").trim();
+  const mergeRef = (runGit(repoPath, ["config", "--get", `branch.${branch}.merge`], true) ?? "").trim();
+  if (remote !== "origin" || !mergeRef.startsWith("refs/heads/")) {
+    throw new GitSyncError("refusing to synchronize without an origin tracking branch");
+  }
+  const remoteBranch = mergeRef.slice("refs/heads/".length);
+  if (!remoteBranch) throw new GitSyncError("refusing to synchronize without an origin tracking branch");
+  const target = `refs/remotes/origin/${remoteBranch}`;
+  runGit(repoPath, [
+    "fetch", "--no-tags", "origin",
+    `refs/heads/${remoteBranch}:refs/remotes/origin/${remoteBranch}`,
+  ]);
+  runGit(repoPath, ["rev-parse", "--verify", target]);
+  const head = runGit(repoPath, ["rev-parse", "HEAD"])!.trim();
+  const targetOid = runGit(repoPath, ["rev-parse", target])!.trim();
+  if (head === targetOid) return;
+  if (runGit(repoPath, ["merge-base", "--is-ancestor", "HEAD", target], true) === null) {
+    throw new GitSyncError("refusing to synchronize a vault with divergent local history");
+  }
+  runGit(repoPath, ["merge", "--ff-only", target]);
 }
 
 /**
@@ -190,25 +242,9 @@ export class Vault {
     );
   }
 
-  /**
-   * Pull latest changes from the Git remote (best-effort).
-   *
-   * Failures are logged to stderr but do not throw. The vault continues
-   * with whatever local state is available.
-   */
+  /** Safely fast-forward from ``origin`` or throw ``GitSyncError``. */
   pull(): void {
-    try {
-      execSync("git pull", {
-        cwd: this._repoPath,
-        stdio: ["ignore", "ignore", "pipe"],
-        timeout: 30_000,
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      process.stderr.write(
-        `Warning: git pull failed (continuing with local state): ${message}\n`,
-      );
-    }
+    safeSync(this._repoPath);
   }
 
   /**

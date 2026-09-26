@@ -37,7 +37,7 @@ Create a read-only vault instance.
 | `repoPath` | `string`  | -       | Path to the Git repository containing the vault.  |
 | `keyPath`  | `string?` | -       | Path to the age private key file.                 |
 | `keyStr`   | `string?` | -       | Raw age private key string. Overrides `keyPath`.  |
-| `autoPull` | `boolean` | `true`  | Whether to `git pull` before each `get()` call.  |
+| `autoPull` | `boolean` | `true`  | Safely fast-forward from the checked-out branch's `origin` tracking branch before each `get()`. Dirty, detached, missing-upstream, fetch-failed, local-ahead, or divergent checkouts throw `GitSyncError` rather than returning a possibly stale secret. Set false only for an intentionally offline checkout you update yourself.  |
 
 Key resolution order:
 1. `keyStr` option
@@ -57,7 +57,7 @@ List secret metadata without decrypting. Optionally filter by group name.
 
 ### `vault.pull(): void`
 
-Manually trigger a `git pull`. Failures are logged to stderr but do not throw.
+Safely fast-forward from the `origin` tracking branch. Throws `GitSyncError` rather than continuing with stale state when synchronization is unsafe or fails.
 
 ### `vault.listAgents(): Array<{ name: string; groups: string[] }>`
 

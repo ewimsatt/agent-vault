@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import hashlib
-import logging
 import os
-import sys
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import Optional
 
 from agent_vault.crypto import decrypt_secret, load_identity, load_identity_from_str
 from agent_vault.errors import (
     InvalidIdentifierError,
+    GitSyncError,
     NotAuthorizedError,
     SecretNotFoundError,
     VaultNotFoundError,
@@ -19,48 +21,85 @@ from agent_vault.errors import (
 from agent_vault.manifest import Manifest
 from agent_vault.metadata import SecretMetadata
 
-logger = logging.getLogger("agent_vault")
+def _git_environment() -> dict[str, str]:
+    return {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
 
 
-def _resolve_repo_path(repo_path: str | Path) -> Path:
-    """Resolve repo_path to a local directory.
+def _run_git(repo_path: Path, *args: str, allow_failure: bool = False) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(
+        ["git", *args], cwd=repo_path, env=_git_environment(), capture_output=True,
+        text=True, timeout=30,
+    )
+    if not allow_failure and result.returncode != 0:
+        raise GitSyncError("vault Git synchronization failed")
+    return result
 
-    If repo_path is a Git remote URL (https://, git@, ssh://, git://),
-    clones or updates a cached copy under ~/.agent-vault/cache/<hash>.
-    Otherwise returns the local path directly.
-    """
+
+def _safe_sync(repo_path: Path) -> None:
+    """Fast-forward ``origin`` safely, or fail before a credential read."""
+    remotes = _run_git(repo_path, "remote").stdout.splitlines()
+    if "origin" not in remotes:
+        return
+    _run_git(repo_path, "remote", "get-url", "origin")
+    if _run_git(repo_path, "status", "--porcelain", "--untracked-files=all").stdout:
+        raise GitSyncError("refusing to synchronize a vault with local changes or untracked files")
+    branch = _run_git(repo_path, "symbolic-ref", "--quiet", "--short", "HEAD", allow_failure=True)
+    if branch.returncode != 0 or not branch.stdout.strip():
+        raise GitSyncError("refusing to synchronize a detached or unborn vault branch")
+    branch_name = branch.stdout.strip()
+    remote = _run_git(repo_path, "config", "--get", f"branch.{branch_name}.remote", allow_failure=True)
+    merge_ref = _run_git(repo_path, "config", "--get", f"branch.{branch_name}.merge", allow_failure=True)
+    if remote.stdout.strip() != "origin" or not merge_ref.stdout.strip().startswith("refs/heads/"):
+        raise GitSyncError("refusing to synchronize without an origin tracking branch")
+    remote_branch = merge_ref.stdout.strip().removeprefix("refs/heads/")
+    if not remote_branch:
+        raise GitSyncError("refusing to synchronize without an origin tracking branch")
+    target = f"refs/remotes/origin/{remote_branch}"
+    _run_git(
+        repo_path, "fetch", "--no-tags", "origin",
+        f"refs/heads/{remote_branch}:refs/remotes/origin/{remote_branch}",
+    )
+    _run_git(repo_path, "rev-parse", "--verify", target)
+    head = _run_git(repo_path, "rev-parse", "HEAD").stdout.strip()
+    target_oid = _run_git(repo_path, "rev-parse", target).stdout.strip()
+    if head == target_oid:
+        return
+    if _run_git(repo_path, "merge-base", "--is-ancestor", "HEAD", target, allow_failure=True).returncode != 0:
+        raise GitSyncError("refusing to synchronize a vault with divergent local history")
+    _run_git(repo_path, "merge", "--ff-only", target)
+
+
+def _resolve_repo_path(repo_path: str | Path, auto_pull: bool = True) -> Path:
+    """Resolve a local path or safely update a cached remote checkout."""
     path_str = str(repo_path)
-
-    if not any(
-        path_str.startswith(prefix)
-        for prefix in ("https://", "git@", "ssh://", "git://")
-    ):
+    if not any(path_str.startswith(prefix) for prefix in ("https://", "git@", "ssh://", "git://")):
         return Path(repo_path).expanduser().resolve()
 
-    # Compute stable cache directory from URL
     url_hash = hashlib.sha256(path_str.encode()).hexdigest()[:16]
     cache_dir = Path.home() / ".agent-vault" / "cache" / url_hash
-
     try:
-        import git as gitmodule
-
         if cache_dir.exists() and (cache_dir / ".git").exists():
-            try:
-                repo = gitmodule.Repo(str(cache_dir))
-                if repo.remotes:
-                    repo.remotes[0].pull(rebase=False)
-            except Exception as e:
-                logger.warning("git pull failed for cached repo: %s", e)
-                print(
-                    f"Warning: git pull failed for cached repo: {e}",
-                    file=sys.stderr,
-                )
+            configured_origin = _run_git(cache_dir, "remote", "get-url", "origin", allow_failure=True)
+            if configured_origin.returncode != 0 or configured_origin.stdout.strip() != path_str:
+                raise GitSyncError("cached vault origin does not match the requested repository")
+            if auto_pull:
+                _safe_sync(cache_dir)
         else:
             cache_dir.parent.mkdir(parents=True, exist_ok=True)
-            gitmodule.Repo.clone_from(path_str, str(cache_dir))
-    except Exception as e:
-        raise VaultNotFoundError(f"Failed to clone/update {path_str}: {e}") from e
-
+            if cache_dir.exists():
+                raise VaultNotFoundError("cached vault path is not a Git repository")
+            temporary_parent = Path(tempfile.mkdtemp(prefix=".agent-vault-clone-", dir=cache_dir.parent))
+            temporary_dir = temporary_parent / "checkout"
+            try:
+                _run_git(temporary_parent, "clone", "--", path_str, str(temporary_dir))
+                os.replace(temporary_dir, cache_dir)
+            finally:
+                if temporary_parent.exists():
+                    shutil.rmtree(temporary_parent)
+    except GitSyncError:
+        raise
+    except Exception as error:
+        raise VaultNotFoundError("Failed to clone or initialize the vault cache") from error
     return cache_dir
 
 
@@ -93,7 +132,7 @@ class Vault:
             key_str: Raw age private key string. Overrides key_path.
             auto_pull: Whether to git pull before each get() call.
         """
-        self._repo_path = _resolve_repo_path(repo_path)
+        self._repo_path = _resolve_repo_path(repo_path, auto_pull=auto_pull)
         self._vault_dir = self._repo_path / ".agent-vault"
         self._auto_pull = auto_pull
 
@@ -125,17 +164,8 @@ class Vault:
         self._manifest = Manifest.load(self._vault_dir / "manifest.yaml")
 
     def pull(self) -> None:
-        """Pull latest changes from the Git remote (best-effort)."""
-        try:
-            import git
-
-            repo = git.Repo(str(self._repo_path))
-            if repo.remotes:
-                origin = repo.remotes[0]
-                origin.pull(rebase=False)
-        except Exception as e:
-            logger.warning("git pull failed (continuing with local state): %s", e)
-            print(f"Warning: git pull failed: {e}", file=sys.stderr)
+        """Safely fast-forward from ``origin`` or raise ``GitSyncError``."""
+        _safe_sync(self._repo_path)
 
     def get(self, secret_path: str) -> str:
         """Retrieve and decrypt a secret.

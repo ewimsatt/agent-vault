@@ -50,3 +50,11 @@ export class ManifestError extends VaultError {
     this.name = "ManifestError";
   }
 }
+
+/** A required safe Git synchronization could not complete. */
+export class GitSyncError extends VaultError {
+  constructor(message: string) {
+    super(message);
+    this.name = "GitSyncError";
+  }
+}

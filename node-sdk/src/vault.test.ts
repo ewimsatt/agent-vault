@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { validateSecretPath, Vault } from "./vault.js";
-import { InvalidIdentifierError } from "./index.js";
+import { GitSyncError, InvalidIdentifierError } from "./index.js";
 
 function makeVault(): Vault {
   const repoPath = mkdtempSync(join(tmpdir(), "agent-vault-node-test-"));
@@ -50,5 +51,32 @@ describe("Vault.get secret path validation", () => {
     "unicode/秘密",
   ])("accepts valid path shape %j", (secretPath) => {
     expect(() => validateSecretPath(secretPath)).not.toThrow();
+  });
+});
+
+describe("Vault.pull", () => {
+  it("rejects a dirty checkout without discarding its local bytes", () => {
+    const repoPath = mkdtempSync(join(tmpdir(), "agent-vault-node-sync-"));
+    execFileSync("git", ["init"], { cwd: repoPath });
+    execFileSync("git", ["config", "user.email", "test@agent-vault.invalid"], { cwd: repoPath });
+    execFileSync("git", ["config", "user.name", "Agent Vault test"], { cwd: repoPath });
+    const vaultDir = join(repoPath, ".agent-vault");
+    mkdirSync(vaultDir);
+    const manifest = join(vaultDir, "manifest.yaml");
+    writeFileSync(manifest, "version: 1\n");
+    execFileSync("git", ["add", "."], { cwd: repoPath });
+    execFileSync("git", ["commit", "-m", "seed"], { cwd: repoPath });
+    const bareRemote = mkdtempSync(join(tmpdir(), "agent-vault-node-remote-"));
+    execFileSync("git", ["init", "--bare", bareRemote]);
+    const branch = execFileSync("git", ["branch", "--show-current"], { cwd: repoPath, encoding: "utf8" }).trim();
+    execFileSync("git", ["remote", "add", "origin", bareRemote], { cwd: repoPath });
+    execFileSync("git", ["push", "-u", "origin", branch], { cwd: repoPath });
+    const originalHead = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoPath, encoding: "utf8" }).trim();
+    writeFileSync(manifest, "version: 999\n");
+
+    const vault = new Vault({ repoPath, keyStr: "AGE-SECRET-KEY-1SYNTHETIC", autoPull: false });
+    expect(() => vault.pull()).toThrow(GitSyncError);
+    expect(execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoPath, encoding: "utf8" }).trim()).toBe(originalHead);
+    expect(readFileSync(manifest, "utf8")).toBe("version: 999\n");
   });
 });
