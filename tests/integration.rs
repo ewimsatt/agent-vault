@@ -162,6 +162,45 @@ fn test_list_secrets_includes_nested_records_and_honors_group_filter() {
 }
 
 #[test]
+fn test_setting_existing_secret_to_new_group_moves_access_and_listing() {
+    let _lock = HOME_LOCK.lock().unwrap();
+    let (_tmp, root) = setup_git_repo();
+    let vault = Vault::init(&root).unwrap();
+    let old_group_agent_key = vault.add_agent("old-group-agent").unwrap();
+    let new_group_agent_key = vault.add_agent("new-group-agent").unwrap();
+
+    vault
+        .set_secret("apps/prod/token", "synthetic-token", "apps", None, None)
+        .unwrap();
+    vault.grant_agent("old-group-agent", "apps").unwrap();
+
+    vault
+        .set_secret("apps/prod/token", "rotated-synthetic-token", "deploy", None, None)
+        .unwrap();
+    // The reset itself must remove the old group's recipient before any later lifecycle write.
+    assert!(vault
+        .get_secret("apps/prod/token", &old_group_agent_key)
+        .is_err());
+    vault.grant_agent("new-group-agent", "deploy").unwrap();
+
+    assert!(vault
+        .get_secret("apps/prod/token", &old_group_agent_key)
+        .is_err());
+    assert_eq!(
+        vault
+            .get_secret("apps/prod/token", &new_group_agent_key)
+            .unwrap()
+            .expose_secret(),
+        "rotated-synthetic-token"
+    );
+    assert!(vault.list_secrets(Some("apps")).unwrap().is_empty());
+    let deploy_secrets = vault.list_secrets(Some("deploy")).unwrap();
+    assert_eq!(deploy_secrets.len(), 1);
+    assert_eq!(deploy_secrets[0].name, "apps/prod/token");
+    assert_eq!(deploy_secrets[0].group, "deploy");
+}
+
+#[test]
 fn test_vault_commit_preserves_unrelated_staged_file() {
     let _lock = HOME_LOCK.lock().unwrap();
     let (_tmp, root) = setup_git_repo();

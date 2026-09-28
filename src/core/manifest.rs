@@ -130,8 +130,11 @@ impl Manifest {
         Ok(())
     }
 
-    /// Add a secret path to a group.
-    pub fn add_secret_to_group(
+    /// Assign a secret path to exactly one access group.
+    ///
+    /// Re-setting a secret with a different group moves its manifest policy instead of
+    /// retaining the old group as an unintended additional recipient source.
+    pub fn assign_secret_to_group(
         &mut self,
         group_name: &str,
         secret_path: &str,
@@ -139,11 +142,16 @@ impl Manifest {
         identifiers::validate_group(group_name)?;
         identifiers::validate_secret_path(secret_path)?;
         self.ensure_group(group_name)?;
+        for group in &mut self.groups {
+            if group.name != group_name {
+                group.secrets.retain(|secret| secret != secret_path);
+            }
+        }
         let group = self
             .groups
             .iter_mut()
             .find(|g| g.name == group_name)
-            .unwrap();
+            .expect("group was just ensured");
         if !group.secrets.contains(&secret_path.to_string()) {
             group.secrets.push(secret_path.to_string());
         }
@@ -224,7 +232,7 @@ mod tests {
         let mut m = Manifest::new("alice");
         m.add_agent("bot1").unwrap();
         m.ensure_group("stripe").unwrap();
-        m.add_secret_to_group("stripe", "stripe/api-key").unwrap();
+        m.assign_secret_to_group("stripe", "stripe/api-key").unwrap();
         m.grant("bot1", "stripe").unwrap();
 
         assert_eq!(m.agents_in_group("stripe"), vec!["bot1"]);

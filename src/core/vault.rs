@@ -192,8 +192,9 @@ impl Vault {
 
         let mut manifest = Manifest::load(&self.paths.manifest_file())?;
 
-        // Ensure group exists and secret is registered
-        manifest.add_secret_to_group(group, secret_path)?;
+        // A secret has exactly one manifest group. Re-setting it with --group moves its
+        // policy rather than leaving prior-group members as unintended recipients.
+        manifest.assign_secret_to_group(group, secret_path)?;
 
         // Collect authorized agents from group + extras
         let mut all_agents = manifest.agents_in_group(group);
@@ -238,6 +239,7 @@ impl Vault {
         let meta_path = self.paths.secret_meta_file(secret_path);
         let mut meta = if meta_path.exists() {
             let mut existing = SecretMetadata::load(&meta_path)?;
+            existing.group = group.to_string();
             existing.rotated = chrono::Utc::now();
             existing.authorized_agents = all_agents.clone();
             existing
@@ -336,30 +338,20 @@ impl Vault {
             return Ok(vec![]);
         }
 
-        let mut results = vec![];
-        for group_entry in std::fs::read_dir(&secrets_dir)? {
-            let group_entry = group_entry?;
-            if !group_entry.file_type()?.is_dir() {
-                continue;
-            }
-            let group_name = group_entry.file_name().to_string_lossy().to_string();
-            if let Some(filter) = group_filter {
-                if group_name != filter {
-                    continue;
-                }
-            }
+        let mut enc_records = vec![];
+        let mut meta_records = vec![];
+        discover_secret_records(
+            &secrets_dir,
+            &secrets_dir,
+            &mut enc_records,
+            &mut meta_records,
+        )?;
 
-            let mut enc_records = vec![];
-            let mut meta_records = vec![];
-            let group_dir = group_entry.path();
-            discover_secret_records(
-                &group_dir,
-                &secrets_dir,
-                &mut enc_records,
-                &mut meta_records,
-            )?;
-            for (_, metadata_path) in meta_records {
-                results.push(SecretMetadata::load(&metadata_path)?);
+        let mut results = Vec::with_capacity(meta_records.len());
+        for (_, metadata_path) in meta_records {
+            let metadata = SecretMetadata::load(&metadata_path)?;
+            if group_filter.is_none_or(|group| metadata.group == group) {
+                results.push(metadata);
             }
         }
         results.sort_by(|left, right| left.name.cmp(&right.name));

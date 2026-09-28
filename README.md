@@ -97,7 +97,7 @@ agent-vault check
 agent-vault get search/api-key --key "$HOME/.agent-vault/agents/researcher.key"
 ```
 
-The first part of a secret path determines its default group: `search/api-key` belongs to `search`. Granting an agent a group allows it to decrypt that group's secrets, not just one named secret. Use separate groups where access requirements differ. The CLI also supports an explicit `--group` when storing a secret.
+The first part of a secret path determines its default group: `search/api-key` belongs to `search`. Granting an agent a group allows it to decrypt that group's secrets, not just one named secret. Use separate groups where access requirements differ. Use `--group` to assign a path to a different access group. Re-setting an existing secret with a different `--group` moves its access policy: previous-group members are removed from the new ciphertext, and `list --group` follows the assigned access group rather than the path's directory.
 
 Run vault commands from the directory that contains `.agent-vault/`. Back up the owner key outside the vault repository before relying on it.
 
@@ -327,7 +327,7 @@ Run `agent-vault <command> --help` for full arguments.
 | `set <path> <value>` | Write a text secret; the first path component supplies the default group. |
 | `set <path> --from-file <file>` | Read a text secret from a caller-managed file. Supports `--group`, `--expires`, and additional recipient agents via `--agents`. |
 | `get <path> [--key <file>]` | Sync when applicable and print the decrypted value to stdout. |
-| `list [--group <name>] [--json]` | Inspect metadata for every secret in the vault, including nested paths; optionally filter by its top-level group. No decryption occurs. |
+| `list [--group <name>] [--json]` | Inspect metadata for every secret in the vault, including nested paths; optionally filter by its assigned access group. No decryption occurs. |
 | `grant <agent> <group>` | Add a group membership and re-encrypt affected secrets. |
 | `revoke <agent> <group>` | Remove a group membership and re-encrypt affected secrets. |
 | `remove-agent <name>` | Remove the agent and re-encrypt secrets in its assigned groups. |
