@@ -228,14 +228,9 @@ impl Vault {
         // Encrypt
         let ciphertext = crypto::encrypt(value.as_bytes(), &recipients)?;
 
-        // Write .enc file
-        let enc_path = self.paths.secret_enc_file(secret_path);
-        if let Some(parent) = enc_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&enc_path, &ciphertext)?;
-
-        // Write .meta file (preserve created timestamp on update)
+        // Prepare metadata and manifest before mutating any vault file. In particular, a
+        // malformed existing metadata record must not leave replacement ciphertext paired
+        // with stale policy after this operation returns an error.
         let meta_path = self.paths.secret_meta_file(secret_path);
         let mut meta = if meta_path.exists() {
             let mut existing = SecretMetadata::load(&meta_path)?;
@@ -249,10 +244,17 @@ impl Vault {
         if let Some(exp) = expires {
             meta.expires = Some(exp);
         }
-        meta.save(&meta_path)?;
+        let metadata = serde_yaml::to_string(&meta)?.into_bytes();
+        let manifest_data = serde_yaml::to_string(&manifest)?.into_bytes();
 
-        // Save updated manifest
-        manifest.save(&self.paths.manifest_file())?;
+        // Write prepared vault records.
+        let enc_path = self.paths.secret_enc_file(secret_path);
+        if let Some(parent) = enc_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&enc_path, &ciphertext)?;
+        std::fs::write(&meta_path, metadata)?;
+        std::fs::write(self.paths.manifest_file(), manifest_data)?;
 
         // Commit
         let repo = git::open_repo(self.paths.root())?;

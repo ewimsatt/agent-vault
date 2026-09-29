@@ -201,6 +201,50 @@ fn test_setting_existing_secret_to_new_group_moves_access_and_listing() {
 }
 
 #[test]
+fn test_setting_secret_with_malformed_metadata_leaves_existing_record_unchanged() {
+    let _lock = HOME_LOCK.lock().unwrap();
+    let (_tmp, root) = setup_git_repo();
+    let vault = Vault::init(&root).unwrap();
+    vault
+        .set_secret("apps/prod/token", "original-synthetic-token", "apps", None, None)
+        .unwrap();
+
+    let enc_path = root.join(".agent-vault/secrets/apps/prod/token.enc");
+    let meta_path = root.join(".agent-vault/secrets/apps/prod/token.meta");
+    let manifest_path = root.join(".agent-vault/manifest.yaml");
+    let before_enc = fs::read(&enc_path).unwrap();
+    let before_manifest = fs::read(&manifest_path).unwrap();
+    let malformed_metadata = b"not: [valid yaml";
+    fs::write(&meta_path, malformed_metadata).unwrap();
+    let repo = git2::Repository::open(&root).unwrap();
+    let before_head = repo.head().unwrap().target().unwrap();
+
+    assert!(matches!(
+        vault.set_secret(
+            "apps/prod/token",
+            "replacement-synthetic-token",
+            "deploy",
+            None,
+            None,
+        ),
+        Err(agent_vault::error::VaultError::Yaml(_))
+    ));
+
+    assert_eq!(fs::read(&enc_path).unwrap(), before_enc);
+    assert_eq!(fs::read(&meta_path).unwrap(), malformed_metadata);
+    assert_eq!(fs::read(&manifest_path).unwrap(), before_manifest);
+    assert_eq!(repo.head().unwrap().target().unwrap(), before_head);
+    let owner_key = agent_vault::core::paths::owner_key_path();
+    assert_eq!(
+        vault
+            .get_secret("apps/prod/token", &owner_key)
+            .unwrap()
+            .expose_secret(),
+        "original-synthetic-token"
+    );
+}
+
+#[test]
 fn test_vault_commit_preserves_unrelated_staged_file() {
     let _lock = HOME_LOCK.lock().unwrap();
     let (_tmp, root) = setup_git_repo();
