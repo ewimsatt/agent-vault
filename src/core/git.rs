@@ -243,10 +243,13 @@ pub fn pull(repo: &Repository) -> Result<(), VaultError> {
     status_options
         .include_untracked(true)
         .recurse_untracked_dirs(true)
+        // Ignored files can still collide with an incoming tracked path. Treat them as
+        // local work so automatic credential reads never overwrite them during a sync.
+        .include_ignored(true)
         .include_unmodified(false);
     if !repo.statuses(Some(&mut status_options))?.is_empty() {
         return Err(VaultError::Git(git2::Error::from_str(
-            "refusing to pull into a repository with local changes or untracked files",
+            "refusing to pull into a repository with local changes, untracked files, or ignored files",
         )));
     }
 
@@ -833,6 +836,38 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(local_dir.path().join("collision.txt")).unwrap(),
             "local untracked content\n"
+        );
+    }
+
+    #[test]
+    fn pull_rejects_ignored_file_collision_without_advancing_head() {
+        let (_bare_dir, _seed_dir, local_dir, seed, local) = cloned_repo_with_origin();
+        commit_file(&seed, ".gitignore", "*.local\n", "ignore local files");
+        push_master(&seed);
+        pull(&local).unwrap();
+
+        let remote_commit = commit_file(
+            &seed,
+            "collision.local",
+            "remote content\n",
+            "remote update",
+        );
+        push_master(&seed);
+        let original_head = local.head().unwrap().target();
+        std::fs::write(
+            local_dir.path().join("collision.local"),
+            "local ignored content\n",
+        )
+        .unwrap();
+
+        let error = pull(&local).unwrap_err();
+        assert!(error.to_string().contains("ignored files"));
+
+        assert_eq!(local.head().unwrap().target(), original_head);
+        assert_ne!(local.head().unwrap().target(), Some(remote_commit));
+        assert_eq!(
+            std::fs::read_to_string(local_dir.path().join("collision.local")).unwrap(),
+            "local ignored content\n"
         );
     }
 

@@ -142,7 +142,7 @@ Repository access and decryption access are separate: a private repository requi
 
 **Sync behavior matters:**
 
-- The CLI's `get` fetches from `origin` when configured and fast-forwards when possible. It refuses a repository with staged, modified, or untracked files. It does not automatically resolve divergent history. Without `origin`, it reads the local vault.
+- The CLI's `get` fetches from `origin` when configured and fast-forwards when possible. It refuses a repository with staged, modified, untracked, or ignored files, including an ignored file that would collide with an incoming tracked path. It does not automatically resolve divergent history. Without `origin`, it reads the local vault.
 - Both SDKs default to safely fast-forwarding from the checked-out branch's `origin` tracking branch before `get()`. They refuse dirty, detached, missing-upstream, fetch-failed, local-ahead, or divergent checkouts rather than decrypting stale ciphertext. Without `origin`, they read the local vault. For a deliberately offline or read-only checkout, disable SDK synchronization with `auto_pull=False` in Python or `autoPull: false` in Node.js; you are then responsible for distributing updated ciphertext.
 
 ## Use credentials in your application
