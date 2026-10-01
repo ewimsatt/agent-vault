@@ -253,31 +253,79 @@ pub fn pull(repo: &Repository) -> Result<(), VaultError> {
         )));
     }
 
-    // Fetch only after confirming the local worktree and index are clean.
-    let mut remote = repo.find_remote(&remote_name)?;
-    remote.fetch(&[] as &[&str], None, None)?;
-
-    // Try to fast-forward merge the current branch
-    let fetch_head = match repo.find_reference("FETCH_HEAD") {
-        Ok(r) => r,
-        Err(_) => return Ok(()), // no FETCH_HEAD (empty remote)
-    };
-    let fetch_commit = repo.reference_to_annotated_commit(&fetch_head)?;
-
-    let (analysis, _) = repo.merge_analysis(&[&fetch_commit])?;
-    if analysis.is_fast_forward() {
-        if let Ok(mut head_ref) = repo.head() {
-            let commit = repo.find_commit(fetch_commit.id())?;
-            let mut checkout = git2::build::CheckoutBuilder::default();
-            // A safe checkout runs before moving HEAD, so checkout failure cannot advance it.
-            repo.checkout_tree(commit.as_object(), Some(&mut checkout))?;
-            let msg = format!("Fast-forward to {}", fetch_commit.id());
-            head_ref.set_target(fetch_commit.id(), &msg)?;
-        }
+    // Bind the automatic read sync to this checked-out branch's configured origin upstream.
+    // FETCH_HEAD is not sufficient: a fetch can record another branch there, which could move
+    // the current branch to unrelated ciphertext.
+    let head = repo.head().map_err(|_| {
+        VaultError::Git(git2::Error::from_str(
+            "refusing to pull because HEAD is detached or unborn; check out a branch with an origin upstream",
+        ))
+    })?;
+    let head_name = head.name().ok_or_else(|| {
+        VaultError::Git(git2::Error::from_str(
+            "refusing to pull because HEAD has no branch reference",
+        ))
+    })?;
+    let branch_name = head_name.strip_prefix("refs/heads/").ok_or_else(|| {
+        VaultError::Git(git2::Error::from_str(
+            "refusing to pull because HEAD is detached; check out a branch with an origin upstream",
+        ))
+    })?;
+    let config = repo.config()?;
+    let configured_remote = config
+        .get_string(&format!("branch.{branch_name}.remote"))
+        .map_err(|_| {
+            VaultError::Git(git2::Error::from_str(
+                "refusing to pull because the current branch has no configured origin upstream",
+            ))
+        })?;
+    if configured_remote != remote_name {
+        return Err(VaultError::Git(git2::Error::from_str(
+            "refusing to pull because the current branch is not configured to track origin",
+        )));
     }
-    // If not fast-forward or up-to-date, do nothing (don't attempt merge)
+    let merge_ref = config
+        .get_string(&format!("branch.{branch_name}.merge"))
+        .map_err(|_| {
+            VaultError::Git(git2::Error::from_str(
+                "refusing to pull because the current branch has no configured upstream branch",
+            ))
+        })?;
+    let upstream_branch = merge_ref.strip_prefix("refs/heads/").ok_or_else(|| {
+        VaultError::Git(git2::Error::from_str(
+            "refusing to pull because the configured upstream is not a branch",
+        ))
+    })?;
+    let upstream_ref = format!("refs/remotes/{remote_name}/{upstream_branch}");
+    let refspec = format!("+{merge_ref}:{upstream_ref}");
 
-    Ok(())
+    // Fetch only the configured upstream, then resolve that exact tracking ref rather than a
+    // generic FETCH_HEAD entry.
+    let mut remote = repo.find_remote(&remote_name)?;
+    remote.fetch(&[refspec.as_str()], None, None)?;
+    let upstream = repo.find_reference(&upstream_ref)?;
+    let upstream_commit = repo.reference_to_annotated_commit(&upstream)?;
+
+    let (analysis, _) = repo.merge_analysis(&[&upstream_commit])?;
+    if analysis.is_fast_forward() {
+        let commit = repo.find_commit(upstream_commit.id())?;
+        let mut checkout = git2::build::CheckoutBuilder::default();
+        // A safe checkout runs before moving HEAD, so checkout failure cannot advance it.
+        repo.checkout_tree(commit.as_object(), Some(&mut checkout))?;
+        let mut head_ref = repo.find_reference(head_name)?;
+        let msg = format!("Fast-forward to {}", upstream_commit.id());
+        head_ref.set_target(upstream_commit.id(), &msg)?;
+        return Ok(());
+    }
+    // `is_up_to_date` also covers a local branch that is ahead of upstream. Automatic reads
+    // accept only exact equality, otherwise callers could decrypt a locally stale revision.
+    if analysis.is_up_to_date() && head.target() == Some(upstream_commit.id()) {
+        return Ok(());
+    }
+
+    Err(VaultError::Git(git2::Error::from_str(
+        "refusing to pull because the local branch is ahead of or diverged from its configured upstream",
+    )))
 }
 
 const PRE_COMMIT_SIDECAR: &str = "pre-commit.agent-vault-original-v1";
@@ -872,11 +920,80 @@ mod tests {
     }
 
     #[test]
+    fn pull_refuses_when_current_branch_upstream_was_not_fetched() {
+        let (_bare_dir, _seed_dir, local_dir, seed, local) = cloned_repo_with_origin();
+        let base = seed.head().unwrap().peel_to_commit().unwrap();
+        seed.branch("feature", &base, false).unwrap();
+        seed.find_remote("origin")
+            .unwrap()
+            .push(&["refs/heads/feature:refs/heads/feature"], None)
+            .unwrap();
+
+        let fetch = Command::new("git")
+            .args(["fetch", "origin", "feature:refs/remotes/origin/feature"])
+            .current_dir(local_dir.path())
+            .output()
+            .unwrap();
+        assert!(
+            fetch.status.success(),
+            "failed to fetch feature upstream: {}",
+            String::from_utf8_lossy(&fetch.stderr)
+        );
+        let checkout = Command::new("git")
+            .args(["checkout", "--track", "-b", "feature", "origin/feature"])
+            .current_dir(local_dir.path())
+            .output()
+            .unwrap();
+        assert!(
+            checkout.status.success(),
+            "failed to configure feature upstream: {}",
+            String::from_utf8_lossy(&checkout.stderr)
+        );
+        let restrict_fetch = Command::new("git")
+            .args([
+                "config",
+                "remote.origin.fetch",
+                "+refs/heads/master:refs/remotes/origin/master",
+            ])
+            .current_dir(local_dir.path())
+            .output()
+            .unwrap();
+        assert!(
+            restrict_fetch.status.success(),
+            "failed to restrict origin fetch refspec: {}",
+            String::from_utf8_lossy(&restrict_fetch.stderr)
+        );
+        let original_head = local.head().unwrap().target();
+
+        commit_file(
+            &seed,
+            "master-only.txt",
+            "remote master update\n",
+            "master update",
+        );
+        push_master(&seed);
+
+        pull(&local).unwrap();
+        assert_eq!(local.head().unwrap().target(), original_head);
+        assert!(!local_dir.path().join("master-only.txt").exists());
+    }
+
+    #[test]
     fn pull_without_origin_is_a_no_op() {
         let dir = tempfile::tempdir().unwrap();
         let repo = Repository::init(dir.path()).unwrap();
 
         pull(&repo).unwrap();
+    }
+
+    #[test]
+    fn pull_refuses_local_ahead_branch_without_decrypting_stale_revision() {
+        let (_bare_dir, _seed_dir, _local_dir, _seed, local) = cloned_repo_with_origin();
+        let local_ahead = commit_file(&local, "local-only.txt", "local commit\n", "local update");
+
+        let error = pull(&local).unwrap_err();
+        assert!(error.to_string().contains("ahead of or diverged"));
+        assert_eq!(local.head().unwrap().target(), Some(local_ahead));
     }
 
     #[test]
@@ -886,8 +1003,8 @@ mod tests {
         commit_file(&seed, "remote.txt", "remote commit\n", "remote update");
         push_master(&seed);
 
-        pull(&local).unwrap();
-
+        let error = pull(&local).unwrap_err();
+        assert!(error.to_string().contains("ahead of or diverged"));
         assert_eq!(local.head().unwrap().target(), Some(original_head));
         assert!(!local_dir.path().join("remote.txt").exists());
     }
