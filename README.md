@@ -336,7 +336,7 @@ Run `agent-vault <command> --help` for full arguments.
 | `recover-agent <name>` | Replace an agent keypair and re-encrypt its group secrets. |
 | `completions <shell>` | Generate shell completion definitions. |
 
-Prefer group grants for ongoing access policy. `set --agents` adds recipients to that write; it is not a substitute for a persistent group membership.
+Prefer group grants for ongoing access policy. `set --agents` adds recipients to that write; it is not a substitute for a persistent group membership. Because v1 manifests do not retain direct-recipient policy, `remove-agent` and `recover-agent` refuse before changing anything if that agent remains a direct recipient on a current secret. Re-set each named secret without that agent before retrying, then rotate the external credential if the agent may have learned it.
 
 ## Troubleshooting
 

@@ -43,4 +43,19 @@ pub enum VaultError {
 
     #[error("age key error: {0}")]
     AgeKey(String),
+
+    #[error(
+        "cannot {operation} agent '{agent}' because it remains a direct recipient for secret(s): {secrets}; re-set those secrets without --agents or migrate their policy before retrying"
+    )]
+    UnmanagedDirectRecipient {
+        operation: &'static str,
+        agent: String,
+        secrets: String,
+    },
+
+    #[error("cannot {operation} agent because vault metadata integrity check failed: {reason}")]
+    UnsafeLifecycleMetadata {
+        operation: &'static str,
+        reason: String,
+    },
 }

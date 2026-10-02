@@ -805,6 +805,178 @@ fn test_set_with_extra_agents() {
 }
 
 #[test]
+fn test_remove_agent_with_direct_only_recipient_refuses_without_changing_access() {
+    let _lock = HOME_LOCK.lock().unwrap();
+    let (_tmp, root) = setup_git_repo();
+    let vault = Vault::init(&root).unwrap();
+    let agent_key = vault.add_agent("bot1").unwrap();
+    vault
+        .set_secret(
+            "stripe/api-key",
+            "synthetic-secret",
+            "stripe",
+            None,
+            Some(&["bot1".to_string()]),
+        )
+        .unwrap();
+
+    let manifest_path = root.join(".agent-vault/manifest.yaml");
+    let before_manifest = fs::read(&manifest_path).unwrap();
+    let repo = git2::Repository::open(&root).unwrap();
+    let before_head = repo.head().unwrap().target().unwrap();
+
+    let error = vault.remove_agent("bot1").unwrap_err();
+    assert!(error.to_string().contains("direct recipient"));
+    assert_eq!(fs::read(&manifest_path).unwrap(), before_manifest);
+    assert_eq!(repo.head().unwrap().target().unwrap(), before_head);
+    assert_eq!(
+        vault
+            .get_secret("stripe/api-key", &agent_key)
+            .unwrap()
+            .expose_secret(),
+        "synthetic-secret"
+    );
+}
+
+#[test]
+fn test_remove_agent_refuses_mismatched_metadata_that_hides_direct_recipient() {
+    let _lock = HOME_LOCK.lock().unwrap();
+    let (_tmp, root) = setup_git_repo();
+    let vault = Vault::init(&root).unwrap();
+    let agent_key = vault.add_agent("bot1").unwrap();
+    vault
+        .set_secret(
+            "alpha/secret",
+            "synthetic-direct-secret",
+            "alpha",
+            None,
+            Some(&["bot1".to_string()]),
+        )
+        .unwrap();
+    vault
+        .set_secret("beta/secret", "synthetic-group-secret", "beta", None, None)
+        .unwrap();
+    vault.grant_agent("bot1", "beta").unwrap();
+
+    let alpha_meta = root.join(".agent-vault/secrets/alpha/secret.meta");
+    let beta_meta = root.join(".agent-vault/secrets/beta/secret.meta");
+    fs::rename(&alpha_meta, &beta_meta).unwrap();
+    let repo = git2::Repository::open(&root).unwrap();
+    let before_head = repo.head().unwrap().target().unwrap();
+
+    let error = vault.remove_agent("bot1").unwrap_err();
+    assert!(error.to_string().contains("metadata"));
+    assert_eq!(repo.head().unwrap().target().unwrap(), before_head);
+    assert_eq!(
+        vault
+            .get_secret("alpha/secret", &agent_key)
+            .unwrap()
+            .expose_secret(),
+        "synthetic-direct-secret"
+    );
+}
+
+#[test]
+fn test_remove_agent_refuses_missing_secret_directory_named_by_manifest() {
+    let _lock = HOME_LOCK.lock().unwrap();
+    let (_tmp, root) = setup_git_repo();
+    let vault = Vault::init(&root).unwrap();
+    let agent_key = vault.add_agent("bot1").unwrap();
+    vault
+        .set_secret(
+            "alpha/secret",
+            "synthetic-direct-secret",
+            "alpha",
+            None,
+            Some(&["bot1".to_string()]),
+        )
+        .unwrap();
+    fs::remove_dir_all(root.join(".agent-vault/secrets")).unwrap();
+    let repo = git2::Repository::open(&root).unwrap();
+    let before_head = repo.head().unwrap().target().unwrap();
+
+    let error = vault.remove_agent("bot1").unwrap_err();
+    assert!(error.to_string().contains("secret records directory"));
+    assert_eq!(repo.head().unwrap().target().unwrap(), before_head);
+    assert!(agent_key.exists());
+}
+
+#[test]
+fn test_recover_agent_refuses_mismatched_metadata_that_hides_direct_recipient() {
+    let _lock = HOME_LOCK.lock().unwrap();
+    let (_tmp, root) = setup_git_repo();
+    let vault = Vault::init(&root).unwrap();
+    let agent_key = vault.add_agent("bot1").unwrap();
+    vault
+        .set_secret(
+            "alpha/secret",
+            "synthetic-direct-secret",
+            "alpha",
+            None,
+            Some(&["bot1".to_string()]),
+        )
+        .unwrap();
+    vault
+        .set_secret("beta/secret", "synthetic-group-secret", "beta", None, None)
+        .unwrap();
+    vault.grant_agent("bot1", "beta").unwrap();
+
+    fs::rename(
+        root.join(".agent-vault/secrets/alpha/secret.meta"),
+        root.join(".agent-vault/secrets/beta/secret.meta"),
+    )
+    .unwrap();
+    let before_key = fs::read(&agent_key).unwrap();
+    let repo = git2::Repository::open(&root).unwrap();
+    let before_head = repo.head().unwrap().target().unwrap();
+
+    let error = vault.recover_agent("bot1").unwrap_err();
+    assert!(error.to_string().contains("metadata"));
+    assert_eq!(fs::read(&agent_key).unwrap(), before_key);
+    assert_eq!(repo.head().unwrap().target().unwrap(), before_head);
+    assert_eq!(
+        vault
+            .get_secret("alpha/secret", &agent_key)
+            .unwrap()
+            .expose_secret(),
+        "synthetic-direct-secret"
+    );
+}
+
+#[test]
+fn test_recover_agent_with_direct_only_recipient_refuses_without_replacing_key() {
+    let _lock = HOME_LOCK.lock().unwrap();
+    let (_tmp, root) = setup_git_repo();
+    let vault = Vault::init(&root).unwrap();
+    let agent_key = vault.add_agent("bot1").unwrap();
+    vault
+        .set_secret(
+            "stripe/api-key",
+            "synthetic-secret",
+            "stripe",
+            None,
+            Some(&["bot1".to_string()]),
+        )
+        .unwrap();
+
+    let before_key = fs::read(&agent_key).unwrap();
+    let repo = git2::Repository::open(&root).unwrap();
+    let before_head = repo.head().unwrap().target().unwrap();
+
+    let error = vault.recover_agent("bot1").unwrap_err();
+    assert!(error.to_string().contains("direct recipient"));
+    assert_eq!(fs::read(&agent_key).unwrap(), before_key);
+    assert_eq!(repo.head().unwrap().target().unwrap(), before_head);
+    assert_eq!(
+        vault
+            .get_secret("stripe/api-key", &agent_key)
+            .unwrap()
+            .expose_secret(),
+        "synthetic-secret"
+    );
+}
+
+#[test]
 fn test_set_with_nonexistent_extra_agent_fails() {
     let _lock = HOME_LOCK.lock().unwrap();
     let (_tmp, root) = setup_git_repo();

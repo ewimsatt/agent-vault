@@ -485,12 +485,133 @@ impl Vault {
         Ok(secret_paths)
     }
 
+    /// Find legacy per-write recipients that are present in metadata but absent from manifest policy.
+    ///
+    /// `set --agents` can create these recipients without recording durable policy in the v1
+    /// manifest. Removal and recovery must fail before mutating keys or records, because they
+    /// cannot safely identify every ciphertext that still admits that identity.
+    fn unmanaged_direct_recipient_paths(
+        &self,
+        operation: &'static str,
+        agent_name: &str,
+        manifest: &Manifest,
+    ) -> Result<Vec<String>, VaultError> {
+        let secrets_dir = self.paths.secrets_dir();
+        if !secrets_dir.exists() {
+            if manifest.groups.iter().all(|group| group.secrets.is_empty()) {
+                return Ok(vec![]);
+            }
+            return Err(VaultError::UnsafeLifecycleMetadata {
+                operation,
+                reason: "secret records directory is missing while manifest names secrets".to_string(),
+            });
+        }
+
+        let mut enc_records = vec![];
+        let mut meta_records = vec![];
+        discover_secret_records(
+            &secrets_dir,
+            &secrets_dir,
+            &mut enc_records,
+            &mut meta_records,
+        )?;
+
+        let enc_paths: BTreeSet<_> = enc_records
+            .into_iter()
+            .map(|(secret_path, _)| secret_path)
+            .collect();
+        let meta_paths: BTreeSet<_> = meta_records
+            .iter()
+            .map(|(secret_path, _)| secret_path.clone())
+            .collect();
+        if enc_paths != meta_paths {
+            return Err(VaultError::UnsafeLifecycleMetadata {
+                operation: operation,
+                reason: "encrypted and metadata record paths do not match".to_string(),
+            });
+        }
+        let manifest_paths: BTreeSet<_> = manifest
+            .groups
+            .iter()
+            .flat_map(|group| group.secrets.iter().cloned())
+            .collect();
+        if enc_paths != manifest_paths {
+            return Err(VaultError::UnsafeLifecycleMetadata {
+                operation: operation,
+                reason: "secret records and manifest paths do not match".to_string(),
+            });
+        }
+        let known_agents: BTreeSet<_> = manifest
+            .agents
+            .iter()
+            .map(|agent| agent.name.as_str())
+            .collect();
+
+        let mut paths = Vec::new();
+        for (secret_path, metadata_path) in meta_records {
+            let metadata = SecretMetadata::load(&metadata_path)?;
+            if metadata.name != secret_path {
+                return Err(VaultError::UnsafeLifecycleMetadata {
+                    operation: operation,
+                    reason: format!("metadata name does not match secret path '{secret_path}'"),
+                });
+            }
+            if !manifest.groups.iter().any(|group| {
+                group.name == metadata.group && group.secrets.contains(&secret_path)
+            }) {
+                return Err(VaultError::UnsafeLifecycleMetadata {
+                    operation: operation,
+                    reason: format!("metadata group is not authorized for secret '{secret_path}'"),
+                });
+            }
+            if metadata
+                .authorized_agents
+                .iter()
+                .any(|agent| !known_agents.contains(agent.as_str()))
+            {
+                return Err(VaultError::UnsafeLifecycleMetadata {
+                    operation: operation,
+                    reason: format!("metadata names an unknown agent for secret '{secret_path}'"),
+                });
+            }
+            if metadata.authorized_agents.iter().any(|name| name == agent_name)
+                && !manifest
+                    .authorized_agents_for_secret(&secret_path)
+                    .iter()
+                    .any(|name| name == agent_name)
+            {
+                paths.push(secret_path);
+            }
+        }
+        paths.sort();
+        paths.dedup();
+        Ok(paths)
+    }
+
+    fn refuse_unmanaged_direct_recipient(
+        &self,
+        operation: &'static str,
+        agent_name: &str,
+        manifest: &Manifest,
+    ) -> Result<(), VaultError> {
+        let paths = self.unmanaged_direct_recipient_paths(operation, agent_name, manifest)?;
+        if paths.is_empty() {
+            return Ok(());
+        }
+        Err(VaultError::UnmanagedDirectRecipient {
+            operation,
+            agent: agent_name.to_string(),
+            secrets: paths.join(", "),
+        })
+    }
+
     /// Remove an agent from the vault entirely.
     /// Re-encrypts all secrets the agent had access to, removes agent files.
     /// Returns the list of groups the agent belonged to (for rotation warnings).
     pub fn remove_agent(&self, name: &str) -> Result<Vec<String>, VaultError> {
         identifiers::validate_agent(name)?;
         let mut manifest = Manifest::load(&self.paths.manifest_file())?;
+        self.refuse_unmanaged_direct_recipient("remove", name, &manifest)?;
         let groups = manifest
             .agent_groups(name)
             .ok_or_else(|| VaultError::AgentNotFound(name.to_string()))?;
@@ -541,6 +662,7 @@ impl Vault {
         }
 
         let manifest = Manifest::load(&self.paths.manifest_file())?;
+        self.refuse_unmanaged_direct_recipient("recover", name, &manifest)?;
         let agent_groups = manifest
             .agent_groups(name)
             .ok_or_else(|| VaultError::AgentNotFound(name.to_string()))?;
