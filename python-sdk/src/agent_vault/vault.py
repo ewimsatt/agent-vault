@@ -164,8 +164,9 @@ class Vault:
         self._manifest = Manifest.load(self._vault_dir / "manifest.yaml")
 
     def pull(self) -> None:
-        """Safely fast-forward from ``origin`` or raise ``GitSyncError``."""
+        """Safely fast-forward from ``origin`` and refresh cached policy state."""
         _safe_sync(self._repo_path)
+        self._manifest = Manifest.load(self._vault_dir / "manifest.yaml")
 
     def get(self, secret_path: str) -> str:
         """Retrieve and decrypt a secret.

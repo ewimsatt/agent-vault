@@ -377,6 +377,36 @@ class TestPullWarnings:
         vault.pull()
         assert (vault_env["repo"] / ".agent-vault" / "manifest.yaml").read_text() == "version: 2\n"
 
+    def test_pull_refreshes_cached_agent_policy_after_fast_forward(self, vault_env):
+        """Agent listings follow the manifest that a successful pull installed."""
+        remote = vault_env["repo"].parent / "remote-agent-policy.git"
+        subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=vault_env["repo"], check=True, capture_output=True)
+        subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+        branch = subprocess.check_output(
+            ["git", "branch", "--show-current"], cwd=vault_env["repo"], text=True
+        ).strip()
+        subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=vault_env["repo"], check=True)
+        subprocess.run(["git", "push", "-u", "origin", branch], cwd=vault_env["repo"], check=True, capture_output=True)
+        updater = vault_env["repo"].parent / "agent-policy-updater"
+        subprocess.run(["git", "clone", str(remote), str(updater)], check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@agent-vault.invalid"], cwd=updater, check=True)
+        subprocess.run(["git", "config", "user.name", "Agent Vault test"], cwd=updater, check=True)
+        (updater / ".agent-vault" / "manifest.yaml").write_text(
+            "version: 1\nagents:\n  - name: fresh-bot\n    groups: []\n"
+        )
+        subprocess.run(["git", "add", ".agent-vault/manifest.yaml"], cwd=updater, check=True)
+        subprocess.run(["git", "commit", "-m", "replace agent policy"], cwd=updater, check=True, capture_output=True)
+        subprocess.run(["git", "push"], cwd=updater, check=True, capture_output=True)
+
+        vault = Vault(repo_path=vault_env["repo"], key_path=vault_env["owner_key"], auto_pull=False)
+        assert [agent["name"] for agent in vault.list_agents()] == ["test-bot"]
+        status = subprocess.check_output(
+            ["git", "status", "--porcelain", "--untracked-files=all"], cwd=vault_env["repo"], text=True
+        )
+        assert not status, status
+        vault.pull()
+        assert [agent["name"] for agent in vault.list_agents()] == ["fresh-bot"]
+
 
 class TestResolveRepoPath:
     def test_local_path_unchanged(self):

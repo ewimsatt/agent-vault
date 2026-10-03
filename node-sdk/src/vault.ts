@@ -242,9 +242,10 @@ export class Vault {
     );
   }
 
-  /** Safely fast-forward from ``origin`` or throw ``GitSyncError``. */
+  /** Safely fast-forward from ``origin`` and refresh cached policy state. */
   pull(): void {
     safeSync(this._repoPath);
+    this._manifest = Manifest.load(join(this._vaultDir, "manifest.yaml"));
   }
 
   /**

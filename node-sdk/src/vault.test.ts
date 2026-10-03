@@ -79,4 +79,33 @@ describe("Vault.pull", () => {
     expect(execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoPath, encoding: "utf8" }).trim()).toBe(originalHead);
     expect(readFileSync(manifest, "utf8")).toBe("version: 999\n");
   });
+
+  it("refreshes cached agent policy after a successful fast-forward", () => {
+    const repoPath = mkdtempSync(join(tmpdir(), "agent-vault-node-policy-"));
+    execFileSync("git", ["init"], { cwd: repoPath });
+    execFileSync("git", ["config", "user.email", "test@agent-vault.invalid"], { cwd: repoPath });
+    execFileSync("git", ["config", "user.name", "Agent Vault test"], { cwd: repoPath });
+    const vaultDir = join(repoPath, ".agent-vault");
+    mkdirSync(vaultDir);
+    const manifest = join(vaultDir, "manifest.yaml");
+    writeFileSync(manifest, "version: 1\nagents:\n  - name: existing-bot\n    groups: []\n");
+    execFileSync("git", ["add", "."], { cwd: repoPath });
+    execFileSync("git", ["commit", "-m", "seed"], { cwd: repoPath });
+    const bareRemote = mkdtempSync(join(tmpdir(), "agent-vault-node-policy-remote-"));
+    execFileSync("git", ["init", "--bare", bareRemote]);
+    const branch = execFileSync("git", ["branch", "--show-current"], { cwd: repoPath, encoding: "utf8" }).trim();
+    execFileSync("git", ["remote", "add", "origin", bareRemote], { cwd: repoPath });
+    execFileSync("git", ["push", "-u", "origin", branch], { cwd: repoPath });
+    const updater = mkdtempSync(join(tmpdir(), "agent-vault-node-policy-updater-"));
+    execFileSync("git", ["clone", bareRemote, updater]);
+    writeFileSync(manifest.replace(repoPath, updater), "version: 1\nagents:\n  - name: existing-bot\n    groups: []\n  - name: fresh-bot\n    groups: []\n");
+    execFileSync("git", ["add", ".agent-vault/manifest.yaml"], { cwd: updater });
+    execFileSync("git", ["commit", "-m", "add agent policy"], { cwd: updater });
+    execFileSync("git", ["push"], { cwd: updater });
+
+    const vault = new Vault({ repoPath, keyStr: "AGE-SECRET-KEY-1SYNTHETIC", autoPull: false });
+    expect(vault.listAgents().map((agent) => agent.name)).toEqual(["existing-bot"]);
+    vault.pull();
+    expect(vault.listAgents().map((agent) => agent.name)).toEqual(["existing-bot", "fresh-bot"]);
+  });
 });
