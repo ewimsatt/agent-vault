@@ -275,6 +275,46 @@ class TestVaultList:
         assert len(stripe_only) == 1
         assert stripe_only[0].name == "stripe/api-key"
 
+    def test_list_secrets_refuses_malformed_metadata_instead_of_silently_omitting_it(self, vault_env):
+        """A partial metadata listing must not look complete after a repository error."""
+        metadata_path = vault_env["repo"] / ".agent-vault" / "secrets" / "stripe" / "api-key.meta"
+        metadata_path.write_text("name: stripe/api-key\ngroup: [not-a-string]\n")
+
+        vault = Vault(
+            repo_path=vault_env["repo"],
+            key_path=vault_env["owner_key"],
+            auto_pull=False,
+        )
+
+        from agent_vault.errors import MetadataError
+
+        with pytest.raises(MetadataError, match="metadata"):
+            vault.list_secrets()
+
+    @pytest.mark.parametrize("timestamp", ["2026-02-30T10:00:00Z", "2026-01-01", "2026-01-01T10:00:00"])
+    def test_list_secrets_rejects_non_rfc3339_metadata_timestamps(self, vault_env, timestamp):
+        metadata_path = vault_env["repo"] / ".agent-vault" / "secrets" / "stripe" / "api-key.meta"
+        metadata_path.write_text(
+            "name: stripe/api-key\ngroup: stripe\ncreated: \"%s\"\nrotated: %s\nauthorized_agents: [test-bot]\n"
+            % (timestamp, timestamp)
+        )
+        vault = Vault(repo_path=vault_env["repo"], key_path=vault_env["owner_key"], auto_pull=False)
+        from agent_vault.errors import MetadataError
+        with pytest.raises(MetadataError):
+            vault.list_secrets()
+
+    def test_list_secrets_refuses_metadata_directory_enumeration_failures(self, vault_env, monkeypatch):
+        from agent_vault import vault as vault_module
+        from agent_vault.errors import MetadataError
+
+        def denied(_):
+            raise PermissionError("synthetic denied directory")
+
+        monkeypatch.setattr(vault_module.os, "scandir", denied)
+        vault = Vault(repo_path=vault_env["repo"], key_path=vault_env["owner_key"], auto_pull=False)
+        with pytest.raises(MetadataError, match="cannot enumerate"):
+            vault.list_secrets()
+
     def test_list_agents(self, vault_env):
         """Can list agents with group memberships."""
         vault = Vault(

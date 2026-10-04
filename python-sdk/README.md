@@ -51,7 +51,7 @@ Decrypt and return a secret. Raises `SecretNotFoundError` or `NotAuthorizedError
 
 ### `vault.list_secrets(group=None) -> list[SecretMetadata]`
 
-List secret metadata without decrypting.
+List secret metadata without decrypting. It returns a complete, name-sorted view or raises `MetadataError` when any metadata record is malformed or unreadable; it never silently omits a record.
 
 ### `vault.list_agents() -> list[dict]`
 

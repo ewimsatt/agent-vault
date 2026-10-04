@@ -7,6 +7,7 @@ from agent_vault.errors import (
     SecretNotFoundError,
     InvalidIdentifierError,
     NotAuthorizedError,
+    MetadataError,
     GitSyncError,
 )
 
@@ -18,5 +19,6 @@ __all__ = [
     "SecretNotFoundError",
     "InvalidIdentifierError",
     "NotAuthorizedError",
+    "MetadataError",
     "GitSyncError",
 ]

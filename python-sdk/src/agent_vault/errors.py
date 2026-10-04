@@ -25,5 +25,9 @@ class ManifestError(VaultError):
     """Error parsing or querying the manifest."""
 
 
+class MetadataError(VaultError):
+    """Secret metadata is malformed or cannot be read completely."""
+
+
 class GitSyncError(VaultError):
     """A required safe Git synchronization could not complete."""

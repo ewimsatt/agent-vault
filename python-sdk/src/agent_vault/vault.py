@@ -17,6 +17,7 @@ from agent_vault.errors import (
     NotAuthorizedError,
     SecretNotFoundError,
     VaultNotFoundError,
+    MetadataError,
 )
 from agent_vault.manifest import Manifest
 from agent_vault.metadata import SecretMetadata
@@ -101,6 +102,22 @@ def _resolve_repo_path(repo_path: str | Path, auto_pull: bool = True) -> Path:
     except Exception as error:
         raise VaultNotFoundError("Failed to clone or initialize the vault cache") from error
     return cache_dir
+
+
+def _metadata_paths(directory: Path):
+    """Recursively enumerate metadata files without suppressing directory errors."""
+    try:
+        entries = list(os.scandir(directory))
+    except OSError as error:
+        raise MetadataError(f"cannot enumerate vault metadata directory {directory}: {error}") from error
+    for entry in entries:
+        try:
+            if entry.is_dir(follow_symlinks=False):
+                yield from _metadata_paths(Path(entry.path))
+            elif entry.name.endswith(".meta"):
+                yield Path(entry.path)
+        except OSError as error:
+            raise MetadataError(f"cannot inspect vault metadata path {entry.path}: {error}") from error
 
 
 class Vault:
@@ -216,15 +233,12 @@ class Vault:
             return []
 
         results = []
-        for meta_path in sorted(secrets_dir.rglob("*.meta")):
-            try:
-                meta = SecretMetadata.load(meta_path)
-                if group is None or meta.group == group:
-                    results.append(meta)
-            except Exception:
-                continue
+        for meta_path in sorted(_metadata_paths(secrets_dir)):
+            meta = SecretMetadata.load(meta_path)
+            if group is None or meta.group == group:
+                results.append(meta)
 
-        return results
+        return sorted(results, key=lambda metadata: metadata.name)
 
     def list_agents(self) -> list[dict]:
         """List all agents and their group memberships.

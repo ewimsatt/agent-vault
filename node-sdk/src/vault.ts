@@ -16,6 +16,7 @@ import {
   InvalidIdentifierError,
   GitSyncError,
   NotAuthorizedError,
+  MetadataError,
 } from "./errors.js";
 import { Manifest } from "./manifest.js";
 import { parseMetadataFile, type SecretMetadata } from "./metadata.js";
@@ -299,22 +300,22 @@ export class Vault {
       return [];
     }
 
-    const metaFiles = findFiles(secretsDir, ".meta").sort();
+    let metaFiles: string[];
+    try {
+      metaFiles = findFiles(secretsDir, ".meta").sort();
+    } catch (error) {
+      throw new MetadataError(`cannot enumerate vault metadata: ${error instanceof Error ? error.message : String(error)}`);
+    }
     const results: SecretMetadata[] = [];
 
     for (const metaPath of metaFiles) {
-      try {
-        const meta = parseMetadataFile(metaPath);
-        if (group === undefined || meta.group === group) {
-          results.push(meta);
-        }
-      } catch {
-        // Skip unparseable metadata files
-        continue;
+      const meta = parseMetadataFile(metaPath);
+      if (group === undefined || meta.group === group) {
+        results.push(meta);
       }
     }
 
-    return results;
+    return results.sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
   }
 
   /**

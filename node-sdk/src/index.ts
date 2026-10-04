@@ -12,6 +12,7 @@ export {
   InvalidIdentifierError,
   NotAuthorizedError,
   ManifestError,
+  MetadataError,
   GitSyncError,
 } from "./errors.js";
 export { type SecretMetadata, parseMetadataFile, parseMetadata } from "./metadata.js";

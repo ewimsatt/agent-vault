@@ -53,7 +53,7 @@ Throws `SecretNotFoundError` if the secret does not exist. Throws `NotAuthorized
 
 ### `vault.listSecrets(group?): SecretMetadata[]`
 
-List secret metadata without decrypting. Optionally filter by group name.
+List secret metadata without decrypting. It returns a complete, name-sorted view or throws `MetadataError` when any metadata record is malformed or unreadable; it never silently omits a record.
 
 ### `vault.pull(): void`
 

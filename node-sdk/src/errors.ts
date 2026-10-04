@@ -51,6 +51,14 @@ export class ManifestError extends VaultError {
   }
 }
 
+/** Secret metadata is malformed or cannot be read completely. */
+export class MetadataError extends VaultError {
+  constructor(message: string) {
+    super(message);
+    this.name = "MetadataError";
+  }
+}
+
 /** A required safe Git synchronization could not complete. */
 export class GitSyncError extends VaultError {
   constructor(message: string) {
