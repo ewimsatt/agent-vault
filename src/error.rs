@@ -23,6 +23,9 @@ pub enum VaultError {
     #[error("invalid vault identifier: {0}")]
     InvalidIdentifier(String),
 
+    #[error("invalid manifest: {0}")]
+    InvalidManifest(String),
+
     #[error("no identity key found — use --key or set AGENT_VAULT_KEY")]
     NoIdentityKey,
 

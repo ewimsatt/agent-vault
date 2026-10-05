@@ -2,11 +2,12 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use secrecy::ExposeSecret;
+use secrecy::{ExposeSecret, SecretString};
 use tempfile::TempDir;
 
 use agent_vault::core::metadata::SecretMetadata;
 use agent_vault::core::vault::{CheckIssue, Vault};
+use agent_vault::error::VaultError;
 
 // Global mutex to serialize tests that modify HOME env var.
 static HOME_LOCK: Mutex<()> = Mutex::new(());
@@ -105,6 +106,35 @@ fn test_get_nonexistent_secret() {
 
     let key_path = agent_vault::core::paths::owner_key_path();
     assert!(vault.get_secret("nope/nothing", &key_path).is_err());
+}
+
+#[test]
+fn test_get_refuses_a_manifest_with_a_secret_in_multiple_groups() {
+    let _lock = HOME_LOCK.lock().unwrap();
+    let (_tmp, root) = setup_git_repo();
+    let vault = Vault::init(&root).unwrap();
+    vault
+        .set_secret("stripe/api-key", "synthetic-secret", "stripe", None, None)
+        .unwrap();
+
+    fs::write(
+        root.join(".agent-vault/manifest.yaml"),
+        "version: 1\nowners: []\nagents: []\ngroups:\n  - name: stripe\n    secrets: [stripe/api-key]\n  - name: duplicate-policy\n    secrets: [stripe/api-key]\n",
+    )
+    .unwrap();
+
+    let owner_key = agent_vault::core::paths::owner_key_path();
+    assert!(matches!(
+        vault.get_secret("stripe/api-key", &owner_key),
+        Err(VaultError::InvalidManifest(message))
+            if message == "secret 'stripe/api-key' is assigned to more than one group"
+    ));
+    let raw_owner_key = SecretString::from(fs::read_to_string(owner_key).unwrap());
+    assert!(matches!(
+        vault.get_secret_with_key("stripe/api-key", &raw_owner_key),
+        Err(VaultError::InvalidManifest(message))
+            if message == "secret 'stripe/api-key' is assigned to more than one group"
+    ));
 }
 
 #[test]

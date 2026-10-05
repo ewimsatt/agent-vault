@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -159,16 +160,48 @@ impl Manifest {
     }
 
     fn validate(&self) -> Result<(), VaultError> {
-        for agent in &self.agents {
-            identifiers::validate_agent(&agent.name)?;
-            for group in &agent.groups {
-                identifiers::validate_group(group)?;
-            }
-        }
+        let mut group_names = BTreeSet::new();
+        let mut secret_groups = BTreeMap::new();
         for group in &self.groups {
             identifiers::validate_group(&group.name)?;
+            if !group_names.insert(group.name.as_str()) {
+                return Err(VaultError::InvalidManifest(format!(
+                    "group '{}' is declared more than once",
+                    group.name
+                )));
+            }
             for secret in &group.secrets {
                 identifiers::validate_secret_path(secret)?;
+                if let Some(previous_group) =
+                    secret_groups.insert(secret.as_str(), group.name.as_str())
+                {
+                    if previous_group != group.name {
+                        return Err(VaultError::InvalidManifest(format!(
+                            "secret '{secret}' is assigned to more than one group"
+                        )));
+                    }
+                }
+            }
+        }
+
+        let mut agent_names = BTreeSet::new();
+        for agent in &self.agents {
+            identifiers::validate_agent(&agent.name)?;
+            if !agent_names.insert(agent.name.as_str()) {
+                return Err(VaultError::InvalidManifest(format!(
+                    "agent '{}' is declared more than once",
+                    agent.name
+                )));
+            }
+
+            for group in &agent.groups {
+                identifiers::validate_group(group)?;
+                if !group_names.contains(group.as_str()) {
+                    return Err(VaultError::InvalidManifest(format!(
+                        "agent '{}' belongs to unknown group '{group}'",
+                        agent.name
+                    )));
+                }
             }
         }
         Ok(())
@@ -243,5 +276,68 @@ mod tests {
 
         m.revoke("bot1", "stripe").unwrap();
         assert!(m.agents_in_group("stripe").is_empty());
+    }
+
+    #[test]
+    fn manifest_load_rejects_duplicate_agent_names() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            file.path(),
+            "version: 1\nowners: []\nagents:\n  - name: worker\n    groups: []\n  - name: worker\n    groups: []\ngroups: []\n",
+        )
+        .unwrap();
+
+        assert!(Manifest::load(file.path()).is_err());
+    }
+
+    #[test]
+    fn manifest_load_rejects_duplicate_group_names() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            file.path(),
+            "version: 1\nowners: []\nagents: []\ngroups:\n  - name: deploy\n    secrets: []\n  - name: deploy\n    secrets: []\n",
+        )
+        .unwrap();
+
+        assert!(Manifest::load(file.path()).is_err());
+    }
+
+    #[test]
+    fn manifest_load_rejects_agent_membership_in_unknown_group() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            file.path(),
+            "version: 1\nowners: []\nagents:\n  - name: worker\n    groups: [missing]\ngroups: []\n",
+        )
+        .unwrap();
+
+        assert!(Manifest::load(file.path()).is_err());
+    }
+
+    #[test]
+    fn manifest_load_rejects_secret_assigned_to_multiple_groups() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            file.path(),
+            "version: 1\nowners: []\nagents: []\ngroups:\n  - name: deploy\n    secrets: [apps/token]\n  - name: staging\n    secrets: [apps/token]\n",
+        )
+        .unwrap();
+
+        assert!(matches!(
+            Manifest::load(file.path()),
+            Err(VaultError::InvalidManifest(message)) if message == "secret 'apps/token' is assigned to more than one group"
+        ));
+    }
+
+    #[test]
+    fn manifest_load_allows_duplicate_secret_entries_in_the_same_group() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            file.path(),
+            "version: 1\nowners: []\nagents: []\ngroups:\n  - name: deploy\n    secrets: [apps/token, apps/token]\n",
+        )
+        .unwrap();
+
+        assert!(Manifest::load(file.path()).is_ok());
     }
 }

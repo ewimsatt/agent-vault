@@ -299,6 +299,10 @@ impl Vault {
 
     fn encrypted_secret_path(&self, secret_path: &str) -> Result<PathBuf, VaultError> {
         identifiers::validate_secret_path(secret_path)?;
+        // Decryption must not proceed from an ambiguous policy snapshot. Even though age
+        // recipients protect ciphertext, a malformed manifest can hide an accidental
+        // over-grant that operators need to repair before an agent reads a value.
+        let _manifest = Manifest::load(&self.paths.manifest_file())?;
         let enc_path = self.paths.secret_enc_file(secret_path);
         if !enc_path.exists() {
             return Err(VaultError::SecretNotFound(secret_path.to_string()));
