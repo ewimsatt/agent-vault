@@ -144,6 +144,19 @@ class TestVaultGet:
         with pytest.raises(SecretNotFoundError):
             vault.get("nope/missing")
 
+    def test_get_refuses_orphaned_ciphertext_absent_from_manifest(self, vault_env):
+        """An existing SDK instance must observe current policy before decrypting."""
+        vault = Vault(
+            repo_path=vault_env["repo"],
+            key_path=vault_env["owner_key"],
+            auto_pull=False,
+        )
+        manifest_path = vault_env["repo"] / ".agent-vault" / "manifest.yaml"
+        manifest_path.write_text("version: 1\nowners: []\nagents: []\ngroups:\n  - name: stripe\n    secrets: []\n")
+
+        with pytest.raises(SecretNotFoundError):
+            vault.get("stripe/api-key")
+
     def test_get_unauthorized(self, vault_env):
         """Agent without access gets NotAuthorizedError."""
         # Add a second agent without granting access

@@ -138,6 +138,36 @@ fn test_get_refuses_a_manifest_with_a_secret_in_multiple_groups() {
 }
 
 #[test]
+fn test_get_refuses_an_orphaned_ciphertext_absent_from_a_valid_manifest() {
+    let _lock = HOME_LOCK.lock().unwrap();
+    let (_tmp, root) = setup_git_repo();
+    let vault = Vault::init(&root).unwrap();
+    vault
+        .set_secret("stripe/api-key", "synthetic-secret", "stripe", None, None)
+        .unwrap();
+
+    // Simulate a policy edit that removes the secret but leaves a historical ciphertext
+    // in the checkout. The manifest remains structurally valid, so reads must enforce
+    // actual secret membership rather than merely parse the manifest.
+    fs::write(
+        root.join(".agent-vault/manifest.yaml"),
+        "version: 1\nowners: []\nagents: []\ngroups:\n  - name: stripe\n    secrets: []\n",
+    )
+    .unwrap();
+
+    let owner_key = agent_vault::core::paths::owner_key_path();
+    assert!(matches!(
+        vault.get_secret("stripe/api-key", &owner_key),
+        Err(VaultError::SecretNotFound(secret)) if secret == "stripe/api-key"
+    ));
+    let raw_owner_key = SecretString::from(fs::read_to_string(owner_key).unwrap());
+    assert!(matches!(
+        vault.get_secret_with_key("stripe/api-key", &raw_owner_key),
+        Err(VaultError::SecretNotFound(secret)) if secret == "stripe/api-key"
+    ));
+}
+
+#[test]
 fn test_multiple_secrets() {
     let _lock = HOME_LOCK.lock().unwrap();
     let (_tmp, root) = setup_git_repo();

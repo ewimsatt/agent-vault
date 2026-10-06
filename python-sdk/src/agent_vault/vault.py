@@ -203,6 +203,15 @@ class Vault:
         if self._auto_pull:
             self.pull()
 
+        # Reload policy even for offline callers: auto_pull controls Git synchronization,
+        # not whether a long-lived client may authorize against stale on-disk policy.
+        self._manifest = Manifest.load(self._vault_dir / "manifest.yaml")
+
+        # The manifest is the access-policy authority. Refuse a historical or
+        # orphaned ciphertext that remains on disk after policy removes its path.
+        if secret_path not in self._manifest.list_secrets():
+            raise SecretNotFoundError(f"Secret not found: {secret_path}")
+
         # Resolve the encrypted file path
         # Secret path "stripe/api-key" -> .agent-vault/secrets/stripe/api-key.enc
         enc_path = self._vault_dir / "secrets" / _to_file_path(secret_path, ".enc")

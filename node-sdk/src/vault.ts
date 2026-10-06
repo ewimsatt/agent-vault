@@ -264,6 +264,16 @@ export class Vault {
       this.pull();
     }
 
+    // Reload policy even for offline callers: autoPull controls Git synchronization,
+    // not whether a long-lived client may authorize against stale on-disk policy.
+    this._manifest = Manifest.load(join(this._vaultDir, "manifest.yaml"));
+
+    // The manifest is the access-policy authority. Refuse a historical or
+    // orphaned ciphertext that remains on disk after policy removes its path.
+    if (!this._manifest.listSecrets().includes(secretPath)) {
+      throw new SecretNotFoundError(`Secret not found: ${secretPath}`);
+    }
+
     const encPath = join(
       this._vaultDir,
       "secrets",

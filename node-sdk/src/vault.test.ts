@@ -5,17 +5,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { validateSecretPath, Vault } from "./vault.js";
 import { parseMetadata } from "./metadata.js";
-import { GitSyncError, InvalidIdentifierError, MetadataError } from "./index.js";
+import { GitSyncError, InvalidIdentifierError, MetadataError, SecretNotFoundError } from "./index.js";
 
-function makeVault(): Vault {
+function makeVault(manifest = "version: 1\n", autoPull = true): Vault {
   const repoPath = mkdtempSync(join(tmpdir(), "agent-vault-node-test-"));
   const vaultDir = join(repoPath, ".agent-vault");
   mkdirSync(vaultDir);
-  writeFileSync(join(vaultDir, "manifest.yaml"), "version: 1\n");
+  writeFileSync(join(vaultDir, "manifest.yaml"), manifest);
   return new Vault({
     repoPath,
     keyStr: "AGE-SECRET-KEY-1SYNTHETIC",
-    autoPull: true,
+    autoPull,
   });
 }
 
@@ -52,6 +52,20 @@ describe("Vault.get secret path validation", () => {
     "unicode/秘密",
   ])("accepts valid path shape %j", (secretPath) => {
     expect(() => validateSecretPath(secretPath)).not.toThrow();
+  });
+
+  it("refuses an orphaned ciphertext absent from the current manifest", async () => {
+    const vault = makeVault(
+      "version: 1\ngroups:\n  - name: stripe\n    secrets: [stripe/api-key]\n",
+      false,
+    );
+    const vaultDir = (vault as unknown as { _vaultDir: string })._vaultDir;
+    const secretDir = join(vaultDir, "secrets", "stripe");
+    mkdirSync(secretDir, { recursive: true });
+    writeFileSync(join(secretDir, "api-key.enc"), "not-an-age-ciphertext");
+    writeFileSync(join(vaultDir, "manifest.yaml"), "version: 1\ngroups:\n  - name: stripe\n    secrets: []\n");
+
+    await expect(vault.get("stripe/api-key")).rejects.toBeInstanceOf(SecretNotFoundError);
   });
 });
 
