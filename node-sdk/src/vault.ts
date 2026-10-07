@@ -8,7 +8,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 import * as age from "age-encryption";
 import {
   VaultNotFoundError,
@@ -154,9 +154,12 @@ function findFiles(dir: string, suffix: string): string[] {
   const entries = readdirSync(dir, { withFileTypes: true });
   for (const entry of entries) {
     const fullPath = join(dir, entry.name);
+    if (entry.isSymbolicLink() && entry.name.endsWith(suffix)) {
+      throw new MetadataError(`metadata record must not be a symbolic link: ${fullPath}`);
+    }
     if (entry.isDirectory()) {
       results.push(...findFiles(fullPath, suffix));
-    } else if (entry.name.endsWith(suffix)) {
+    } else if (entry.isFile() && entry.name.endsWith(suffix)) {
       results.push(fullPath);
     }
   }
@@ -305,6 +308,10 @@ export class Vault {
    * @returns Array of SecretMetadata objects.
    */
   listSecrets(group?: string): SecretMetadata[] {
+    // Metadata is descriptive, but the manifest remains the policy authority.
+    // Refresh even for offline callers so a long-lived SDK cannot report a
+    // retained record after on-disk policy removes or reassigns it.
+    this._manifest = Manifest.load(join(this._vaultDir, "manifest.yaml"));
     const secretsDir = join(this._vaultDir, "secrets");
     if (!existsSync(secretsDir)) {
       return [];
@@ -320,6 +327,16 @@ export class Vault {
 
     for (const metaPath of metaFiles) {
       const meta = parseMetadataFile(metaPath);
+      const recordPath = relative(secretsDir, metaPath)
+        .split(sep)
+        .join("/")
+        .replace(/\.meta$/, "");
+      if (recordPath !== meta.name) {
+        throw new MetadataError(`secret metadata path '${recordPath}' does not match metadata name '${meta.name}'`);
+      }
+      if (!this._manifest.groupSecrets(meta.group).includes(meta.name)) {
+        throw new MetadataError(`secret metadata '${meta.name}' is absent from the current manifest`);
+      }
       if (group === undefined || meta.group === group) {
         results.push(meta);
       }

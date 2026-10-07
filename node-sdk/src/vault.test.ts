@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { validateSecretPath, Vault } from "./vault.js";
@@ -78,6 +78,53 @@ describe("Vault.listSecrets metadata integrity", () => {
     writeFileSync(join(secretsDir, "api-key.meta"), "name: stripe/api-key\ngroup: [not-a-string]\n");
 
     expect(() => vault.listSecrets()).toThrow(MetadataError);
+  });
+
+  it("refuses metadata removed from the current manifest", () => {
+    const vault = makeVault(
+      "version: 1\ngroups:\n  - name: stripe\n    secrets: [stripe/api-key]\n",
+      false,
+    );
+    const vaultDir = (vault as unknown as { _vaultDir: string })._vaultDir;
+    const secretsDir = join(vaultDir, "secrets", "stripe");
+    mkdirSync(secretsDir, { recursive: true });
+    writeFileSync(
+      join(secretsDir, "api-key.meta"),
+      "name: stripe/api-key\ngroup: stripe\ncreated: 2026-01-01T00:00:00Z\nrotated: 2026-01-01T00:00:00Z\nauthorized_agents: []\n",
+    );
+    writeFileSync(join(vaultDir, "manifest.yaml"), "version: 1\ngroups:\n  - name: stripe\n    secrets: []\n");
+
+    expect(() => vault.listSecrets()).toThrow(/absent from the current manifest/);
+  });
+  it("refuses metadata whose file path impersonates a manifest secret", () => {
+    const vault = makeVault(
+      "version: 1\ngroups:\n  - name: current\n    secrets: [current/real]\n",
+      false,
+    );
+    const vaultDir = (vault as unknown as { _vaultDir: string })._vaultDir;
+    const staleDir = join(vaultDir, "secrets", "stale");
+    mkdirSync(staleDir, { recursive: true });
+    writeFileSync(
+      join(staleDir, "old.meta"),
+      "name: current/real\ngroup: current\ncreated: 2026-01-01T00:00:00Z\nrotated: 2026-01-01T00:00:00Z\nauthorized_agents: []\n",
+    );
+
+    expect(() => vault.listSecrets()).toThrow(/does not match metadata name/);
+  });
+  it("refuses a symlinked metadata record", () => {
+    const vault = makeVault(
+      "version: 1\ngroups:\n  - name: stripe\n    secrets: [stripe/api-key]\n",
+      false,
+    );
+    const vaultDir = (vault as unknown as { _vaultDir: string })._vaultDir;
+    const secretsDir = join(vaultDir, "secrets", "stripe");
+    mkdirSync(secretsDir, { recursive: true });
+    const original = join(secretsDir, "api-key.meta");
+    const target = join(vaultDir, "stale-source.meta");
+    writeFileSync(target, "name: stripe/api-key\ngroup: stripe\ncreated: 2026-01-01T00:00:00Z\nrotated: 2026-01-01T00:00:00Z\nauthorized_agents: []\n");
+    symlinkSync(target, original);
+
+    expect(() => vault.listSecrets()).toThrow(/symbolic link/);
   });
 });
 

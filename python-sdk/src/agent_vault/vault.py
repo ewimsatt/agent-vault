@@ -112,9 +112,11 @@ def _metadata_paths(directory: Path):
         raise MetadataError(f"cannot enumerate vault metadata directory {directory}: {error}") from error
     for entry in entries:
         try:
+            if entry.is_symlink() and entry.name.endswith(".meta"):
+                raise MetadataError(f"metadata record must not be a symbolic link: {entry.path}")
             if entry.is_dir(follow_symlinks=False):
                 yield from _metadata_paths(Path(entry.path))
-            elif entry.name.endswith(".meta"):
+            elif entry.is_file(follow_symlinks=False) and entry.name.endswith(".meta"):
                 yield Path(entry.path)
         except OSError as error:
             raise MetadataError(f"cannot inspect vault metadata path {entry.path}: {error}") from error
@@ -237,6 +239,10 @@ class Vault:
         Returns:
             List of SecretMetadata objects.
         """
+        # Metadata is descriptive, but the manifest remains the policy authority.
+        # Refresh even for offline callers so a long-lived SDK cannot report a
+        # retained record after on-disk policy removes or reassigns it.
+        self._manifest = Manifest.load(self._vault_dir / "manifest.yaml")
         secrets_dir = self._vault_dir / "secrets"
         if not secrets_dir.exists():
             return []
@@ -244,6 +250,15 @@ class Vault:
         results = []
         for meta_path in sorted(_metadata_paths(secrets_dir)):
             meta = SecretMetadata.load(meta_path)
+            record_path = meta_path.relative_to(secrets_dir).with_suffix("").as_posix()
+            if record_path != meta.name:
+                raise MetadataError(
+                    f"secret metadata path '{record_path}' does not match metadata name '{meta.name}'"
+                )
+            if meta.name not in self._manifest.group_secrets(meta.group):
+                raise MetadataError(
+                    f"secret metadata '{meta.name}' is absent from the current manifest"
+                )
             if group is None or meta.group == group:
                 results.append(meta)
 

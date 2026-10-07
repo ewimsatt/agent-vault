@@ -351,6 +351,10 @@ impl Vault {
             return Ok(vec![]);
         }
 
+        // Metadata is descriptive, but the manifest remains the policy authority.
+        // Do not present an orphaned or reassigned record as a current secret.
+        let manifest = Manifest::load(&self.paths.manifest_file())?;
+
         let mut enc_records = vec![];
         let mut meta_records = vec![];
         discover_secret_records(
@@ -361,8 +365,27 @@ impl Vault {
         )?;
 
         let mut results = Vec::with_capacity(meta_records.len());
-        for (_, metadata_path) in meta_records {
+        for (record_path, metadata_path) in meta_records {
             let metadata = SecretMetadata::load(&metadata_path)?;
+            if record_path != metadata.name {
+                return Err(VaultError::InvalidManifest(format!(
+                    "secret metadata path '{record_path}' does not match metadata name '{}'",
+                    metadata.name
+                )));
+            }
+            let manifest_group = manifest.groups.iter().find_map(|group| {
+                group
+                    .secrets
+                    .iter()
+                    .any(|secret| secret == &metadata.name)
+                    .then_some(group.name.as_str())
+            });
+            if manifest_group != Some(metadata.group.as_str()) {
+                return Err(VaultError::InvalidManifest(format!(
+                    "secret metadata '{}' is absent from the current manifest",
+                    metadata.name
+                )));
+            }
             if group_filter.is_none_or(|group| metadata.group == group) {
                 results.push(metadata);
             }

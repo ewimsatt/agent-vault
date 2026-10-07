@@ -304,6 +304,46 @@ class TestVaultList:
         with pytest.raises(MetadataError, match="metadata"):
             vault.list_secrets()
 
+    def test_list_secrets_refuses_metadata_removed_from_current_manifest(self, vault_env):
+        """A retained record must not be listed after current policy removes it."""
+        manifest_path = vault_env["repo"] / ".agent-vault" / "manifest.yaml"
+        manifest_path.write_text("version: 1\nowners: []\nagents: []\ngroups:\n  - name: stripe\n    secrets: []\n")
+        vault = Vault(repo_path=vault_env["repo"], key_path=vault_env["owner_key"], auto_pull=False)
+
+        from agent_vault.errors import MetadataError
+
+        with pytest.raises(MetadataError, match="absent from the current manifest"):
+            vault.list_secrets()
+
+    def test_list_secrets_refuses_metadata_path_that_impersonates_manifest_secret(self, vault_env):
+        """A metadata filename must identify the same logical record it describes."""
+        manifest_path = vault_env["repo"] / ".agent-vault" / "manifest.yaml"
+        manifest_path.write_text("version: 1\nowners: []\nagents: []\ngroups:\n  - name: current\n    secrets: [current/real]\n")
+        original = vault_env["repo"] / ".agent-vault" / "secrets" / "stripe" / "api-key.meta"
+        replacement = vault_env["repo"] / ".agent-vault" / "secrets" / "stale" / "old.meta"
+        replacement.parent.mkdir()
+        original.write_text("name: current/real\ngroup: current\ncreated: 2026-01-01T00:00:00Z\nrotated: 2026-01-01T00:00:00Z\nauthorized_agents: []\n")
+        original.rename(replacement)
+        vault = Vault(repo_path=vault_env["repo"], key_path=vault_env["owner_key"], auto_pull=False)
+
+        from agent_vault.errors import MetadataError
+
+        with pytest.raises(MetadataError, match="does not match metadata name"):
+            vault.list_secrets()
+
+    def test_list_secrets_refuses_symlinked_metadata_record(self, vault_env):
+        """Listings must not trust a record whose bytes live outside its logical path."""
+        original = vault_env["repo"] / ".agent-vault" / "secrets" / "stripe" / "api-key.meta"
+        target = vault_env["repo"] / ".agent-vault" / "stale-source.meta"
+        original.rename(target)
+        original.symlink_to(target)
+        vault = Vault(repo_path=vault_env["repo"], key_path=vault_env["owner_key"], auto_pull=False)
+
+        from agent_vault.errors import MetadataError
+
+        with pytest.raises(MetadataError, match="symbolic link"):
+            vault.list_secrets()
+
     @pytest.mark.parametrize("timestamp", ["2026-02-30T10:00:00Z", "2026-01-01", "2026-01-01T10:00:00"])
     def test_list_secrets_rejects_non_rfc3339_metadata_timestamps(self, vault_env, timestamp):
         metadata_path = vault_env["repo"] / ".agent-vault" / "secrets" / "stripe" / "api-key.meta"

@@ -222,6 +222,51 @@ fn test_list_secrets_includes_nested_records_and_honors_group_filter() {
 }
 
 #[test]
+fn test_list_secrets_refuses_metadata_outside_current_manifest_policy() {
+    let _lock = HOME_LOCK.lock().unwrap();
+    let (_tmp, root) = setup_git_repo();
+    let vault = Vault::init(&root).unwrap();
+    vault
+        .set_secret("stripe/api-key", "synthetic-secret", "stripe", None, None)
+        .unwrap();
+
+    // The ciphertext and metadata remain present, but policy now removes the secret.
+    // Listings must not present stale metadata as a current vault record.
+    fs::write(
+        root.join(".agent-vault/manifest.yaml"),
+        "version: 1\nowners: []\nagents: []\ngroups:\n  - name: stripe\n    secrets: []\n",
+    )
+    .unwrap();
+
+    assert!(matches!(
+        vault.list_secrets(None),
+        Err(VaultError::InvalidManifest(message))
+            if message == "secret metadata 'stripe/api-key' is absent from the current manifest"
+    ));
+}
+
+#[test]
+fn test_list_secrets_refuses_metadata_path_that_impersonates_manifest_secret() {
+    let _lock = HOME_LOCK.lock().unwrap();
+    let (_tmp, root) = setup_git_repo();
+    let vault = Vault::init(&root).unwrap();
+    vault
+        .set_secret("current/real", "synthetic-secret", "current", None, None)
+        .unwrap();
+
+    let meta_path = root.join(".agent-vault/secrets/current/real.meta");
+    let stale_directory = root.join(".agent-vault/secrets/stale");
+    fs::create_dir_all(&stale_directory).unwrap();
+    fs::rename(meta_path, stale_directory.join("old.meta")).unwrap();
+
+    assert!(matches!(
+        vault.list_secrets(None),
+        Err(VaultError::InvalidManifest(message))
+            if message == "secret metadata path 'stale/old' does not match metadata name 'current/real'"
+    ));
+}
+
+#[test]
 fn test_setting_existing_secret_to_new_group_moves_access_and_listing() {
     let _lock = HOME_LOCK.lock().unwrap();
     let (_tmp, root) = setup_git_repo();
