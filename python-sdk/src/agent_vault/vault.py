@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
 from pathlib import Path
@@ -122,6 +123,23 @@ def _metadata_paths(directory: Path):
             raise MetadataError(f"cannot inspect vault metadata path {entry.path}: {error}") from error
 
 
+def _is_regular_secret_record(secrets_dir: Path, record_path: Path) -> bool:
+    """Require every vault-owned path component and final ciphertext to be regular."""
+    try:
+        relative_parts = record_path.relative_to(secrets_dir).parts
+        current = secrets_dir
+        for index, component in enumerate(relative_parts):
+            mode = current.lstat().st_mode
+            if not stat.S_ISDIR(mode):
+                return False
+            current = current / component
+            if index + 1 == len(relative_parts):
+                return stat.S_ISREG(current.lstat().st_mode)
+    except FileNotFoundError:
+        return False
+    return False
+
+
 class Vault:
     """Read-only vault for agents to retrieve secrets.
 
@@ -218,7 +236,8 @@ class Vault:
         # Secret path "stripe/api-key" -> .agent-vault/secrets/stripe/api-key.enc
         enc_path = self._vault_dir / "secrets" / _to_file_path(secret_path, ".enc")
 
-        if not enc_path.exists():
+        secrets_dir = self._vault_dir / "secrets"
+        if not _is_regular_secret_record(secrets_dir, enc_path):
             raise SecretNotFoundError(f"Secret not found: {secret_path}")
 
         ciphertext = enc_path.read_bytes()

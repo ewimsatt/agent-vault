@@ -311,10 +311,40 @@ impl Vault {
             return Err(VaultError::SecretNotFound(secret_path.to_string()));
         }
         let enc_path = self.paths.secret_enc_file(secret_path);
-        if !enc_path.exists() {
+        if !self.is_regular_secret_record(&enc_path)? {
             return Err(VaultError::SecretNotFound(secret_path.to_string()));
         }
         Ok(enc_path)
+    }
+
+    fn is_regular_secret_record(&self, record_path: &Path) -> Result<bool, VaultError> {
+        let secrets_dir = self.paths.secrets_dir();
+        let relative_path = record_path
+            .strip_prefix(&secrets_dir)
+            .expect("secret record path is under the vault secrets directory");
+        let mut current = secrets_dir;
+        let components: Vec<_> = relative_path.components().collect();
+
+        for (index, component) in components.iter().enumerate() {
+            let file_type = match std::fs::symlink_metadata(&current) {
+                Ok(metadata) => metadata.file_type(),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+                Err(error) => return Err(error.into()),
+            };
+            if file_type.is_symlink() || !file_type.is_dir() {
+                return Ok(false);
+            }
+            current.push(component.as_os_str());
+            if index + 1 == components.len() {
+                let file_type = match std::fs::symlink_metadata(&current) {
+                    Ok(metadata) => metadata.file_type(),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+                    Err(error) => return Err(error.into()),
+                };
+                return Ok(file_type.is_file());
+            }
+        }
+        Ok(false)
     }
 
     fn decrypt_secret_file(

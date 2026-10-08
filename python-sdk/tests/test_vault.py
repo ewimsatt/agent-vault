@@ -157,6 +157,28 @@ class TestVaultGet:
         with pytest.raises(SecretNotFoundError):
             vault.get("stripe/api-key")
 
+    def test_get_refuses_symlinked_ciphertext_at_a_manifest_managed_path(self, vault_env):
+        """A caller cannot redirect an authorized record outside its vault path."""
+        ciphertext = vault_env["repo"] / ".agent-vault" / "secrets" / "stripe" / "api-key.enc"
+        external_ciphertext = vault_env["repo"] / "outside-vault.enc"
+        ciphertext.rename(external_ciphertext)
+        ciphertext.symlink_to(external_ciphertext)
+        vault = Vault(repo_path=vault_env["repo"], key_path=vault_env["owner_key"], auto_pull=False)
+
+        with pytest.raises(SecretNotFoundError):
+            vault.get("stripe/api-key")
+
+    def test_get_refuses_symlinked_ciphertext_directory_at_a_manifest_managed_path(self, vault_env):
+        """A caller cannot redirect a managed record directory outside the vault."""
+        secret_directory = vault_env["repo"] / ".agent-vault" / "secrets" / "stripe"
+        external_directory = vault_env["repo"] / "outside-vault-records"
+        secret_directory.rename(external_directory)
+        secret_directory.symlink_to(external_directory, target_is_directory=True)
+        vault = Vault(repo_path=vault_env["repo"], key_path=vault_env["owner_key"], auto_pull=False)
+
+        with pytest.raises(SecretNotFoundError):
+            vault.get("stripe/api-key")
+
     def test_get_unauthorized(self, vault_env):
         """Agent without access gets NotAuthorizedError."""
         # Add a second agent without granting access

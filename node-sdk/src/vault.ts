@@ -5,7 +5,7 @@
  * Decrypted material is never written to disk — it stays in memory only.
  */
 
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
@@ -166,6 +166,24 @@ function findFiles(dir: string, suffix: string): string[] {
   return results;
 }
 
+function isRegularSecretRecord(secretsDir: string, recordPath: string): boolean {
+  const parts = relative(secretsDir, recordPath).split(sep);
+  let current = secretsDir;
+  try {
+    for (let index = 0; index < parts.length; index += 1) {
+      if (!lstatSync(current).isDirectory()) return false;
+      current = join(current, parts[index]);
+      if (index + 1 === parts.length) return lstatSync(current).isFile();
+    }
+  } catch (error: unknown) {
+    if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
+  return false;
+}
+
 /**
  * Read-only vault for agents to retrieve secrets.
  *
@@ -283,7 +301,8 @@ export class Vault {
       toFilePath(secretPath, ".enc"),
     );
 
-    if (!existsSync(encPath)) {
+    const secretsDir = join(this._vaultDir, "secrets");
+    if (!isRegularSecretRecord(secretsDir, encPath)) {
       throw new SecretNotFoundError(`Secret not found: ${secretPath}`);
     }
 

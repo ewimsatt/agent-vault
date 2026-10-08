@@ -167,6 +167,55 @@ fn test_get_refuses_an_orphaned_ciphertext_absent_from_a_valid_manifest() {
     ));
 }
 
+#[cfg(unix)]
+#[test]
+fn test_get_refuses_symlinked_ciphertext_at_a_manifest_managed_path() {
+    let _lock = HOME_LOCK.lock().unwrap();
+    let (_tmp, root) = setup_git_repo();
+    let vault = Vault::init(&root).unwrap();
+    vault
+        .set_secret("stripe/api-key", "synthetic-secret", "stripe", None, None)
+        .unwrap();
+
+    let ciphertext = root.join(".agent-vault/secrets/stripe/api-key.enc");
+    let external_ciphertext = root.join("outside-vault.enc");
+    fs::rename(&ciphertext, &external_ciphertext).unwrap();
+    std::os::unix::fs::symlink(&external_ciphertext, &ciphertext).unwrap();
+
+    let owner_key = agent_vault::core::paths::owner_key_path();
+    assert!(matches!(
+        vault.get_secret("stripe/api-key", &owner_key),
+        Err(VaultError::SecretNotFound(secret)) if secret == "stripe/api-key"
+    ));
+    let raw_owner_key = SecretString::from(fs::read_to_string(owner_key).unwrap());
+    assert!(matches!(
+        vault.get_secret_with_key("stripe/api-key", &raw_owner_key),
+        Err(VaultError::SecretNotFound(secret)) if secret == "stripe/api-key"
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn test_get_refuses_symlinked_ciphertext_directory_at_a_manifest_managed_path() {
+    let _lock = HOME_LOCK.lock().unwrap();
+    let (_tmp, root) = setup_git_repo();
+    let vault = Vault::init(&root).unwrap();
+    vault
+        .set_secret("stripe/api-key", "synthetic-secret", "stripe", None, None)
+        .unwrap();
+
+    let secret_directory = root.join(".agent-vault/secrets/stripe");
+    let external_directory = root.join("outside-vault-records");
+    fs::rename(&secret_directory, &external_directory).unwrap();
+    std::os::unix::fs::symlink(&external_directory, &secret_directory).unwrap();
+
+    let owner_key = agent_vault::core::paths::owner_key_path();
+    assert!(matches!(
+        vault.get_secret("stripe/api-key", &owner_key),
+        Err(VaultError::SecretNotFound(secret)) if secret == "stripe/api-key"
+    ));
+}
+
 #[test]
 fn test_multiple_secrets() {
     let _lock = HOME_LOCK.lock().unwrap();

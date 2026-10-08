@@ -67,6 +67,37 @@ describe("Vault.get secret path validation", () => {
 
     await expect(vault.get("stripe/api-key")).rejects.toBeInstanceOf(SecretNotFoundError);
   });
+
+  it("refuses a symlinked ciphertext at a manifest-managed path", async () => {
+    const vault = makeVault(
+      "version: 1\ngroups:\n  - name: stripe\n    secrets: [stripe/api-key]\n",
+      false,
+    );
+    const vaultDir = (vault as unknown as { _vaultDir: string })._vaultDir;
+    const secretDir = join(vaultDir, "secrets", "stripe");
+    mkdirSync(secretDir, { recursive: true });
+    const ciphertext = join(secretDir, "api-key.enc");
+    const externalCiphertext = join(vaultDir, "outside-vault.enc");
+    writeFileSync(externalCiphertext, "not-an-age-ciphertext");
+    symlinkSync(externalCiphertext, ciphertext);
+
+    await expect(vault.get("stripe/api-key")).rejects.toBeInstanceOf(SecretNotFoundError);
+  });
+  it("refuses a symlinked ciphertext directory at a manifest-managed path", async () => {
+    const vault = makeVault(
+      "version: 1\ngroups:\n  - name: stripe\n    secrets: [stripe/api-key]\n",
+      false,
+    );
+    const vaultDir = (vault as unknown as { _vaultDir: string })._vaultDir;
+    const secretDir = join(vaultDir, "secrets", "stripe");
+    const externalDirectory = join(vaultDir, "outside-vault-records");
+    mkdirSync(join(vaultDir, "secrets"), { recursive: true });
+    mkdirSync(externalDirectory, { recursive: true });
+    writeFileSync(join(externalDirectory, "api-key.enc"), "not-an-age-ciphertext");
+    symlinkSync(externalDirectory, secretDir);
+
+    await expect(vault.get("stripe/api-key")).rejects.toBeInstanceOf(SecretNotFoundError);
+  });
 });
 
 describe("Vault.listSecrets metadata integrity", () => {
