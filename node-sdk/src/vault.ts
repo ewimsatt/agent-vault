@@ -368,6 +368,7 @@ export class Vault {
    * List all agents and their group memberships.
    */
   listAgents(): Array<{ name: string; groups: string[] }> {
+    this._manifest = Manifest.load(join(this._vaultDir, "manifest.yaml"));
     return this._manifest.listAgents();
   }
 

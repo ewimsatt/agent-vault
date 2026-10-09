@@ -61,7 +61,7 @@ Safely fast-forward from the `origin` tracking branch. Throws `GitSyncError` rat
 
 ### `vault.listAgents(): Array<{ name: string; groups: string[] }>`
 
-List all agents and their group memberships from the manifest.
+List all agents and their group memberships from the manifest. Each call reloads the on-disk manifest, so long-lived clients observe the current local agent policy even when `autoPull: false`; disabling automatic sync does not make policy reads stale.
 
 ### `vault.reload(): void`
 

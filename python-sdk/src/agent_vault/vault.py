@@ -289,6 +289,7 @@ class Vault:
         Returns:
             List of dicts with "name" and "groups" keys.
         """
+        self._manifest = Manifest.load(self._vault_dir / "manifest.yaml")
         return self._manifest.list_agents()
 
     @property

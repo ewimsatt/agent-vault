@@ -159,6 +159,24 @@ describe("Vault.listSecrets metadata integrity", () => {
   });
 });
 
+describe("Vault.listAgents", () => {
+  it("reloads replacement policy from disk when auto-pull is disabled", () => {
+    const vault = makeVault(
+      "version: 1\nagents:\n  - name: initial-bot\n    groups: [initial-group]\n",
+      false,
+    );
+    const vaultDir = (vault as unknown as { _vaultDir: string })._vaultDir;
+    writeFileSync(
+      join(vaultDir, "manifest.yaml"),
+      "version: 1\nagents:\n  - name: replacement-bot\n    groups: [replacement-group]\n",
+    );
+
+    expect(vault.listAgents()).toEqual([
+      { name: "replacement-bot", groups: ["replacement-group"] },
+    ]);
+  });
+});
+
 describe("metadata timestamps", () => {
   const documentWith = (timestamp: string) =>
     `name: stripe/api-key\ngroup: stripe\ncreated: ${timestamp}\nrotated: "${timestamp}"\nauthorized_agents: []\n`;

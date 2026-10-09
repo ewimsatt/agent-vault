@@ -402,6 +402,22 @@ class TestVaultList:
         assert agents[0]["name"] == "test-bot"
         assert "stripe" in agents[0]["groups"]
 
+    def test_list_agents_reloads_replacement_policy_from_disk_when_offline(self, vault_env):
+        """A long-lived offline Vault must not return an obsolete agent policy."""
+        vault = Vault(
+            repo_path=vault_env["repo"],
+            key_path=vault_env["owner_key"],
+            auto_pull=False,
+        )
+        manifest_path = vault_env["repo"] / ".agent-vault" / "manifest.yaml"
+        manifest_path.write_text(
+            "version: 1\nagents:\n  - name: replacement-bot\n    groups: [replacement-group]\n"
+        )
+
+        assert vault.list_agents() == [
+            {"name": "replacement-bot", "groups": ["replacement-group"]}
+        ]
+
 
 class TestMultipleSecrets:
     def test_multiple_secrets_and_groups(self, vault_env):

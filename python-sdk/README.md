@@ -55,7 +55,7 @@ List secret metadata without decrypting. It returns a complete, name-sorted view
 
 ### `vault.list_agents() -> list[dict]`
 
-List agents and their group memberships.
+List agents and their group memberships. Each call reloads the on-disk manifest, so long-lived clients observe the current local agent policy even when `auto_pull=False`; disabling automatic sync does not make policy reads stale.
 
 ### `vault.pull()`
 
