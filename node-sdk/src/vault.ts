@@ -115,8 +115,8 @@ function safeSync(repoPath: string): void {
   const remotes = runGit(repoPath, ["remote"])!.split("\n");
   if (!remotes.includes("origin")) return;
   runGit(repoPath, ["remote", "get-url", "origin"]);
-  if (runGit(repoPath, ["status", "--porcelain", "--untracked-files=all"])!.trim()) {
-    throw new GitSyncError("refusing to synchronize a vault with local changes or untracked files");
+  if (runGit(repoPath, ["status", "--porcelain", "--untracked-files=all", "--ignored"])!.trim()) {
+    throw new GitSyncError("refusing to synchronize a vault with local changes, untracked files, or ignored files");
   }
   const branch = (runGit(repoPath, ["symbolic-ref", "--quiet", "--short", "HEAD"], true) ?? "").trim();
   if (!branch) throw new GitSyncError("refusing to synchronize a detached or unborn vault branch");

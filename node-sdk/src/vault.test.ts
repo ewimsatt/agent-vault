@@ -218,6 +218,41 @@ describe("Vault.pull", () => {
     expect(readFileSync(manifest, "utf8")).toBe("version: 999\n");
   });
 
+  it("rejects an ignored local file before an upstream collision can overwrite it", () => {
+    const repoPath = mkdtempSync(join(tmpdir(), "agent-vault-node-ignored-collision-"));
+    execFileSync("git", ["init"], { cwd: repoPath });
+    execFileSync("git", ["config", "user.email", "test@agent-vault.invalid"], { cwd: repoPath });
+    execFileSync("git", ["config", "user.name", "Agent Vault test"], { cwd: repoPath });
+    const vaultDir = join(repoPath, ".agent-vault");
+    mkdirSync(vaultDir);
+    writeFileSync(join(vaultDir, "manifest.yaml"), "version: 1\n");
+    writeFileSync(join(repoPath, ".gitignore"), "*.local\n");
+    execFileSync("git", ["add", "."], { cwd: repoPath });
+    execFileSync("git", ["commit", "-m", "seed"], { cwd: repoPath });
+    const bareRemote = mkdtempSync(join(tmpdir(), "agent-vault-node-ignored-remote-"));
+    execFileSync("git", ["init", "--bare", bareRemote]);
+    const branch = execFileSync("git", ["branch", "--show-current"], { cwd: repoPath, encoding: "utf8" }).trim();
+    execFileSync("git", ["remote", "add", "origin", bareRemote], { cwd: repoPath });
+    execFileSync("git", ["push", "-u", "origin", branch], { cwd: repoPath });
+    const originalHead = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoPath, encoding: "utf8" }).trim();
+    const collision = join(repoPath, "collision.local");
+    writeFileSync(collision, "local synthetic bytes\n");
+
+    const updater = mkdtempSync(join(tmpdir(), "agent-vault-node-ignored-updater-"));
+    execFileSync("git", ["clone", "--branch", branch, bareRemote, updater]);
+    execFileSync("git", ["config", "user.email", "test@agent-vault.invalid"], { cwd: updater });
+    execFileSync("git", ["config", "user.name", "Agent Vault test"], { cwd: updater });
+    writeFileSync(join(updater, "collision.local"), "remote synthetic bytes\n");
+    execFileSync("git", ["add", "-f", "collision.local"], { cwd: updater });
+    execFileSync("git", ["commit", "-m", "track collision"], { cwd: updater });
+    execFileSync("git", ["push"], { cwd: updater });
+
+    const vault = new Vault({ repoPath, keyStr: "AGE-SECRET-KEY-1SYNTHETIC", autoPull: false });
+    expect(() => vault.pull()).toThrow(GitSyncError);
+    expect(execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoPath, encoding: "utf8" }).trim()).toBe(originalHead);
+    expect(readFileSync(collision, "utf8")).toBe("local synthetic bytes\n");
+  });
+
   it("refreshes cached agent policy after a successful fast-forward", () => {
     const repoPath = mkdtempSync(join(tmpdir(), "agent-vault-node-policy-"));
     execFileSync("git", ["init"], { cwd: repoPath });

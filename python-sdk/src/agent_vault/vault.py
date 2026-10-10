@@ -43,8 +43,8 @@ def _safe_sync(repo_path: Path) -> None:
     if "origin" not in remotes:
         return
     _run_git(repo_path, "remote", "get-url", "origin")
-    if _run_git(repo_path, "status", "--porcelain", "--untracked-files=all").stdout:
-        raise GitSyncError("refusing to synchronize a vault with local changes or untracked files")
+    if _run_git(repo_path, "status", "--porcelain", "--untracked-files=all", "--ignored").stdout:
+        raise GitSyncError("refusing to synchronize a vault with local changes, untracked files, or ignored files")
     branch = _run_git(repo_path, "symbolic-ref", "--quiet", "--short", "HEAD", allow_failure=True)
     if branch.returncode != 0 or not branch.stdout.strip():
         raise GitSyncError("refusing to synchronize a detached or unborn vault branch")

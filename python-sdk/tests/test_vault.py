@@ -481,6 +481,39 @@ class TestPullWarnings:
         assert tracked_file.read_bytes() == b"version: 999\n"
         assert original_bytes != tracked_file.read_bytes()
 
+    def test_pull_rejects_ignored_file_before_remote_collision(self, vault_env):
+        """Ignored local bytes must not be overwritten when upstream starts tracking their path."""
+        remote = vault_env["repo"].parent / "remote-ignored-collision.git"
+        subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@agent-vault.invalid"], cwd=vault_env["repo"], check=True)
+        subprocess.run(["git", "config", "user.name", "Agent Vault test"], cwd=vault_env["repo"], check=True)
+        ignored_file = vault_env["repo"] / "collision.local"
+        (vault_env["repo"] / ".gitignore").write_text("*.local\n")
+        subprocess.run(["git", "add", ".gitignore"], cwd=vault_env["repo"], check=True)
+        subprocess.run(["git", "commit", "-m", "ignore local files"], cwd=vault_env["repo"], check=True, capture_output=True)
+        branch = subprocess.check_output(["git", "branch", "--show-current"], cwd=vault_env["repo"], text=True).strip()
+        subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=vault_env["repo"], check=True)
+        subprocess.run(["git", "push", "-u", "origin", branch], cwd=vault_env["repo"], check=True, capture_output=True)
+        original_head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=vault_env["repo"], text=True).strip()
+        ignored_file.write_bytes(b"local synthetic bytes\n")
+
+        updater = vault_env["repo"].parent / "ignored-collision-updater"
+        subprocess.run(["git", "clone", "--branch", branch, str(remote), str(updater)], check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@agent-vault.invalid"], cwd=updater, check=True)
+        subprocess.run(["git", "config", "user.name", "Agent Vault test"], cwd=updater, check=True)
+        (updater / "collision.local").write_bytes(b"remote synthetic bytes\n")
+        subprocess.run(["git", "add", "-f", "collision.local"], cwd=updater, check=True)
+        subprocess.run(["git", "commit", "-m", "track collision"], cwd=updater, check=True, capture_output=True)
+        subprocess.run(["git", "push"], cwd=updater, check=True, capture_output=True)
+
+        vault = Vault(repo_path=vault_env["repo"], key_path=vault_env["owner_key"], auto_pull=False)
+        with pytest.raises(GitSyncError):
+            vault.pull()
+
+        assert subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=vault_env["repo"], text=True).strip() == original_head
+        assert subprocess.check_output(["git", "rev-parse", f"refs/remotes/origin/{branch}"], cwd=vault_env["repo"], text=True).strip() == original_head
+        assert ignored_file.read_bytes() == b"local synthetic bytes\n"
+
     def test_pull_fast_forwards_a_clean_tracking_checkout(self, vault_env):
         """Automatic sync advances a clean checkout to its origin tracking branch."""
         remote = vault_env["repo"].parent / "remote-fast-forward.git"

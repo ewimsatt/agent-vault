@@ -57,7 +57,7 @@ List secret metadata without decrypting. It returns a complete, name-sorted view
 
 ### `vault.pull(): void`
 
-Safely fast-forward from the `origin` tracking branch. Throws `GitSyncError` rather than continuing with stale state when synchronization is unsafe or fails.
+Safely fast-forward from the `origin` tracking branch. Throws `GitSyncError` rather than continuing with stale state when synchronization is unsafe or fails, including when dirty, untracked, or ignored local files could be overwritten by an incoming checkout.
 
 ### `vault.listAgents(): Array<{ name: string; groups: string[] }>`
 

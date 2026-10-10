@@ -43,7 +43,7 @@ Create a read-only vault connection.
 - `repo_path`: Path to the Git repo containing `.agent-vault/`
 - `key_path`: Path to an age private key file
 - `key_str`: Raw age private key string
-- `auto_pull`: Safely fast-forward from the checked-out branch's `origin` tracking branch before each `get()` (default: True). Dirty, detached, missing-upstream, fetch-failed, local-ahead, or divergent checkouts raise `GitSyncError` instead of returning a possibly stale secret. Set False only for an intentionally offline checkout you update yourself.
+- `auto_pull`: Safely fast-forward from the checked-out branch's `origin` tracking branch before each `get()` (default: True). Dirty, untracked, or ignored files, and detached, missing-upstream, fetch-failed, local-ahead, or divergent checkouts raise `GitSyncError` instead of returning a possibly stale secret or overwriting a local ignored path. Set False only for an intentionally offline checkout you update yourself.
 
 ### `vault.get(secret_path) -> str`
 
