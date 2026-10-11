@@ -190,6 +190,12 @@ impl Vault {
             }
         }
 
+        let enc_path = self.paths.secret_enc_file(secret_path);
+        let meta_path = self.paths.secret_meta_file(secret_path);
+        // Refuse symlinked record paths before reading existing metadata or manifest policy.
+        self.ensure_safe_secret_record_path(&enc_path, true)?;
+        self.ensure_safe_secret_record_path(&meta_path, true)?;
+
         let mut manifest = Manifest::load(&self.paths.manifest_file())?;
 
         // A secret has exactly one manifest group. Re-setting it with --group moves its
@@ -231,7 +237,6 @@ impl Vault {
         // Prepare metadata and manifest before mutating any vault file. In particular, a
         // malformed existing metadata record must not leave replacement ciphertext paired
         // with stale policy after this operation returns an error.
-        let meta_path = self.paths.secret_meta_file(secret_path);
         let mut meta = if meta_path.exists() {
             let mut existing = SecretMetadata::load(&meta_path)?;
             existing.group = group.to_string();
@@ -248,7 +253,6 @@ impl Vault {
         let manifest_data = serde_yaml::to_string(&manifest)?.into_bytes();
 
         // Write prepared vault records.
-        let enc_path = self.paths.secret_enc_file(secret_path);
         if let Some(parent) = enc_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -345,6 +349,63 @@ impl Vault {
             }
         }
         Ok(false)
+    }
+
+    fn ensure_safe_vault_directory(&self) -> Result<(), VaultError> {
+        let vault_dir = self.paths.vault_dir();
+        let metadata = std::fs::symlink_metadata(&vault_dir)?;
+        if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
+            return Err(std::io::Error::other("unsafe vault directory").into());
+        }
+        Ok(())
+    }
+
+    /// Refuse to follow symlinks or non-directory ancestors below `.agent-vault/secrets`.
+    ///
+    /// This establishes confinement for a stable checkout. It is deliberately rechecked before
+    /// every lifecycle write, but pathname-based I/O cannot make the check and later open atomic
+    /// against a concurrent local filesystem writer.
+    fn ensure_safe_secret_record_path(
+        &self,
+        record_path: &Path,
+        allow_missing_leaf: bool,
+    ) -> Result<(), VaultError> {
+        self.ensure_safe_vault_directory()?;
+        let secrets_dir = self.paths.secrets_dir();
+        let relative_path = record_path.strip_prefix(&secrets_dir).map_err(|_| {
+            std::io::Error::other("secret record path is outside the vault secrets directory")
+        })?;
+        let mut current = secrets_dir;
+        let components: Vec<_> = relative_path.components().collect();
+
+        for (index, component) in components.iter().enumerate() {
+            let metadata = match std::fs::symlink_metadata(&current) {
+                Ok(metadata) => metadata,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::NotFound && allow_missing_leaf =>
+                {
+                    return Ok(())
+                }
+                Err(error) => return Err(error.into()),
+            };
+            if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
+                return Err(std::io::Error::other("unsafe vault secret record ancestor").into());
+            }
+            current.push(component.as_os_str());
+            if index + 1 != components.len() {
+                continue;
+            }
+
+            match std::fs::symlink_metadata(&current) {
+                Ok(metadata) if metadata.file_type().is_file() => return Ok(()),
+                Ok(_) => return Err(std::io::Error::other("unsafe vault secret record").into()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound && allow_missing_leaf => {
+                    return Ok(())
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Err(std::io::Error::other("secret record path has no leaf").into())
     }
 
     fn decrypt_secret_file(
@@ -445,6 +506,7 @@ impl Vault {
         for secret_path in secret_paths {
             identifiers::validate_secret_path(&secret_path)?;
             let enc_path = self.paths.secret_enc_file(&secret_path);
+            self.ensure_safe_secret_record_path(&enc_path, false)?;
             let plaintext = crypto::decrypt(&std::fs::read(&enc_path)?, &owner_identity)?;
 
             let authorized = manifest.authorized_agents_for_secret(&secret_path);
@@ -460,6 +522,7 @@ impl Vault {
             }
 
             let meta_path = self.paths.secret_meta_file(&secret_path);
+            self.ensure_safe_secret_record_path(&meta_path, false)?;
             let mut meta = SecretMetadata::load(&meta_path)?;
             meta.authorized_agents = authorized.clone();
             meta.rotated = chrono::Utc::now();
@@ -474,10 +537,13 @@ impl Vault {
         Ok(prepared)
     }
 
-    fn write_prepared_secrets(prepared: &[PreparedSecret]) -> Result<Vec<PathBuf>, VaultError> {
+    fn write_prepared_secrets(&self, prepared: &[PreparedSecret]) -> Result<Vec<PathBuf>, VaultError> {
         let mut changed_files = Vec::with_capacity(prepared.len() * 2);
         for record in prepared {
+            // Recheck immediately before each write because preparation can be long-running.
+            self.ensure_safe_secret_record_path(&record.enc_path, false)?;
             std::fs::write(&record.enc_path, &record.ciphertext)?;
+            self.ensure_safe_secret_record_path(&record.meta_path, false)?;
             std::fs::write(&record.meta_path, &record.metadata)?;
             changed_files.push(record.enc_path.clone());
             changed_files.push(record.meta_path.clone());
@@ -498,6 +564,7 @@ impl Vault {
     ) -> Result<Vec<String>, VaultError> {
         identifiers::validate_agent(agent_name)?;
         identifiers::validate_group(group_name)?;
+        self.ensure_safe_vault_directory()?;
         let mut manifest = Manifest::load(&self.paths.manifest_file())?;
         let secret_paths = manifest.secrets_in_group(group_name);
         manifest.grant(agent_name, group_name)?;
@@ -505,7 +572,7 @@ impl Vault {
 
         // No lifecycle file has been written until every affected record is prepared.
         let mut changed_files = vec![self.paths.manifest_file()];
-        changed_files.extend(Self::write_prepared_secrets(&prepared)?);
+        changed_files.extend(self.write_prepared_secrets(&prepared)?);
         manifest.save(&self.paths.manifest_file())?;
         Self::sort_and_deduplicate_paths(&mut changed_files);
 
@@ -528,6 +595,7 @@ impl Vault {
     ) -> Result<Vec<String>, VaultError> {
         identifiers::validate_agent(agent_name)?;
         identifiers::validate_group(group_name)?;
+        self.ensure_safe_vault_directory()?;
         let mut manifest = Manifest::load(&self.paths.manifest_file())?;
         let secret_paths = manifest.secrets_in_group(group_name);
         manifest.revoke(agent_name, group_name)?;
@@ -535,7 +603,7 @@ impl Vault {
 
         // No lifecycle file has been written until every affected record is prepared.
         let mut changed_files = vec![self.paths.manifest_file()];
-        changed_files.extend(Self::write_prepared_secrets(&prepared)?);
+        changed_files.extend(self.write_prepared_secrets(&prepared)?);
         manifest.save(&self.paths.manifest_file())?;
         Self::sort_and_deduplicate_paths(&mut changed_files);
 
@@ -674,6 +742,7 @@ impl Vault {
     /// Returns the list of groups the agent belonged to (for rotation warnings).
     pub fn remove_agent(&self, name: &str) -> Result<Vec<String>, VaultError> {
         identifiers::validate_agent(name)?;
+        self.ensure_safe_vault_directory()?;
         let mut manifest = Manifest::load(&self.paths.manifest_file())?;
         self.refuse_unmanaged_direct_recipient("remove", name, &manifest)?;
         let groups = manifest
@@ -694,7 +763,7 @@ impl Vault {
             self.paths.agent_pub_file(name),
             self.paths.agent_escrow_file(name),
         ];
-        changed_files.extend(Self::write_prepared_secrets(&prepared)?);
+        changed_files.extend(self.write_prepared_secrets(&prepared)?);
         manifest.save(&self.paths.manifest_file())?;
         Self::sort_and_deduplicate_paths(&mut changed_files);
 
@@ -719,6 +788,7 @@ impl Vault {
     /// Returns the path to the new private key.
     pub fn recover_agent(&self, name: &str) -> Result<PathBuf, VaultError> {
         identifiers::validate_agent(name)?;
+        self.ensure_safe_vault_directory()?;
         // Verify agent exists
         let escrow_path = self.paths.agent_escrow_file(name);
         if !escrow_path.exists() {
@@ -759,7 +829,7 @@ impl Vault {
             self.paths.agent_pub_file(name),
             self.paths.agent_escrow_file(name),
         ];
-        changed_files.extend(Self::write_prepared_secrets(&prepared)?);
+        changed_files.extend(self.write_prepared_secrets(&prepared)?);
         Self::sort_and_deduplicate_paths(&mut changed_files);
 
         let repo = git::open_repo(self.paths.root())?;

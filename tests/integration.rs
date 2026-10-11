@@ -1203,3 +1203,142 @@ fn test_recover_rejects_invalid_manifest_before_replacing_agent_key() {
     assert!(vault.recover_agent("bot1").is_err());
     assert_eq!(fs::read(&agent_key).unwrap(), original_key);
 }
+
+#[cfg(unix)]
+#[test]
+fn test_set_secret_refuses_symlinked_ciphertext_without_overwriting_external_target() {
+    let _lock = HOME_LOCK.lock().unwrap();
+    let (_tmp, root) = setup_git_repo();
+    let vault = Vault::init(&root).unwrap();
+    vault
+        .set_secret("apps/prod/token", "original-synthetic-token", "apps", None, None)
+        .unwrap();
+
+    let ciphertext = root.join(".agent-vault/secrets/apps/prod/token.enc");
+    let external_target = root.join("outside-vault.enc");
+    fs::rename(&ciphertext, &external_target).unwrap();
+    std::os::unix::fs::symlink(&external_target, &ciphertext).unwrap();
+    let before_external = fs::read(&external_target).unwrap();
+    let metadata = root.join(".agent-vault/secrets/apps/prod/token.meta");
+    let before_metadata = fs::read(&metadata).unwrap();
+    let manifest = root.join(".agent-vault/manifest.yaml");
+    let before_manifest = fs::read(&manifest).unwrap();
+    let repo = git2::Repository::open(&root).unwrap();
+    let before_head = repo.head().unwrap().target().unwrap();
+
+    assert!(vault
+        .set_secret("apps/prod/token", "replacement-synthetic-token", "apps", None, None)
+        .is_err());
+
+    assert_eq!(fs::read(&external_target).unwrap(), before_external);
+    assert_eq!(fs::read(&metadata).unwrap(), before_metadata);
+    assert_eq!(fs::read(&manifest).unwrap(), before_manifest);
+    assert_eq!(repo.head().unwrap().target().unwrap(), before_head);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_set_secret_refuses_symlinked_vault_directory_without_overwriting_external_vault() {
+    let _lock = HOME_LOCK.lock().unwrap();
+    let (_tmp, root) = setup_git_repo();
+    let vault = Vault::init(&root).unwrap();
+    vault
+        .set_secret("apps/prod/token", "original-synthetic-token", "apps", None, None)
+        .unwrap();
+
+    let vault_dir = root.join(".agent-vault");
+    let external_vault = root.join("external-vault");
+    fs::rename(&vault_dir, &external_vault).unwrap();
+    std::os::unix::fs::symlink(&external_vault, &vault_dir).unwrap();
+    let external_ciphertext = external_vault.join("secrets/apps/prod/token.enc");
+    let before_external = fs::read(&external_ciphertext).unwrap();
+    let manifest = external_vault.join("manifest.yaml");
+    let before_manifest = fs::read(&manifest).unwrap();
+    let repo = git2::Repository::open(&root).unwrap();
+    let before_head = repo.head().unwrap().target().unwrap();
+
+    assert!(vault
+        .set_secret(
+            "apps/prod/token",
+            "replacement-synthetic-token",
+            "apps",
+            None,
+            None,
+        )
+        .is_err());
+
+    assert_eq!(fs::read(&external_ciphertext).unwrap(), before_external);
+    assert_eq!(fs::read(&manifest).unwrap(), before_manifest);
+    assert_eq!(repo.head().unwrap().target().unwrap(), before_head);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_set_secret_refuses_symlinked_metadata_without_overwriting_external_target() {
+    let _lock = HOME_LOCK.lock().unwrap();
+    let (_tmp, root) = setup_git_repo();
+    let vault = Vault::init(&root).unwrap();
+    vault
+        .set_secret("apps/prod/token", "original-synthetic-token", "apps", None, None)
+        .unwrap();
+
+    let metadata = root.join(".agent-vault/secrets/apps/prod/token.meta");
+    let external_target = root.join("outside-vault.meta");
+    fs::rename(&metadata, &external_target).unwrap();
+    fs::write(&external_target, "not: [valid yaml").unwrap();
+    std::os::unix::fs::symlink(&external_target, &metadata).unwrap();
+    let before_external = fs::read(&external_target).unwrap();
+    let ciphertext = root.join(".agent-vault/secrets/apps/prod/token.enc");
+    let before_ciphertext = fs::read(&ciphertext).unwrap();
+    let manifest = root.join(".agent-vault/manifest.yaml");
+    let before_manifest = fs::read(&manifest).unwrap();
+    let repo = git2::Repository::open(&root).unwrap();
+    let before_head = repo.head().unwrap().target().unwrap();
+
+    assert!(matches!(
+        vault.set_secret(
+            "apps/prod/token",
+            "replacement-synthetic-token",
+            "apps",
+            None,
+            None,
+        ),
+        Err(VaultError::Io(_))
+    ));
+
+    assert_eq!(fs::read(&external_target).unwrap(), before_external);
+    assert_eq!(fs::read(&ciphertext).unwrap(), before_ciphertext);
+    assert_eq!(fs::read(&manifest).unwrap(), before_manifest);
+    assert_eq!(repo.head().unwrap().target().unwrap(), before_head);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_grant_refuses_symlinked_ciphertext_without_mutating_vault_or_external_target() {
+    let _lock = HOME_LOCK.lock().unwrap();
+    let (_tmp, root) = setup_git_repo();
+    let vault = Vault::init(&root).unwrap();
+    vault.add_agent("bot1").unwrap();
+    vault
+        .set_secret("apps/prod/token", "synthetic-token", "apps", None, None)
+        .unwrap();
+
+    let ciphertext = root.join(".agent-vault/secrets/apps/prod/token.enc");
+    let external_target = root.join("outside-vault.enc");
+    fs::rename(&ciphertext, &external_target).unwrap();
+    std::os::unix::fs::symlink(&external_target, &ciphertext).unwrap();
+    let before_external = fs::read(&external_target).unwrap();
+    let metadata = root.join(".agent-vault/secrets/apps/prod/token.meta");
+    let before_metadata = fs::read(&metadata).unwrap();
+    let manifest = root.join(".agent-vault/manifest.yaml");
+    let before_manifest = fs::read(&manifest).unwrap();
+    let repo = git2::Repository::open(&root).unwrap();
+    let before_head = repo.head().unwrap().target().unwrap();
+
+    assert!(vault.grant_agent("bot1", "apps").is_err());
+
+    assert_eq!(fs::read(&external_target).unwrap(), before_external);
+    assert_eq!(fs::read(&metadata).unwrap(), before_metadata);
+    assert_eq!(fs::read(&manifest).unwrap(), before_manifest);
+    assert_eq!(repo.head().unwrap().target().unwrap(), before_head);
+}
