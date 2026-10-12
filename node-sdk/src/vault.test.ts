@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { validateSecretPath, Vault } from "./vault.js";
@@ -97,6 +97,54 @@ describe("Vault.get secret path validation", () => {
     symlinkSync(externalDirectory, secretDir);
 
     await expect(vault.get("stripe/api-key")).rejects.toBeInstanceOf(SecretNotFoundError);
+  });
+});
+
+describe("Vault root invariants", () => {
+  it("rejects symlinked vault roots and manifests during construction", () => {
+    const repoPath = mkdtempSync(join(tmpdir(), "agent-vault-node-root-"));
+    const vaultDir = join(repoPath, ".agent-vault");
+    const externalVault = join(repoPath, "external-vault");
+    mkdirSync(vaultDir);
+    writeFileSync(join(vaultDir, "manifest.yaml"), "version: 1\n");
+    renameSync(vaultDir, externalVault);
+    symlinkSync(externalVault, vaultDir, "dir");
+    expect(() => new Vault({ repoPath, keyStr: "AGE-SECRET-KEY-1SYNTHETIC", autoPull: false })).toThrow();
+
+    unlinkSync(vaultDir);
+    renameSync(externalVault, vaultDir);
+    const manifest = join(vaultDir, "manifest.yaml");
+    const externalManifest = join(repoPath, "external-manifest.yaml");
+    renameSync(manifest, externalManifest);
+    symlinkSync(externalManifest, manifest);
+    expect(() => new Vault({ repoPath, keyStr: "AGE-SECRET-KEY-1SYNTHETIC", autoPull: false })).toThrow();
+  });
+
+  it("rejects root replacement, manifest symlinks, and symlinked secrets roots after construction", () => {
+    const vault = makeVault("version: 1\n", false);
+    const vaultDir = (vault as unknown as { _vaultDir: string })._vaultDir;
+    const repoPath = join(vaultDir, "..");
+    const externalVault = join(repoPath, "external-vault");
+    renameSync(vaultDir, externalVault);
+    symlinkSync(externalVault, vaultDir, "dir");
+    expect(() => vault.listAgents()).toThrow();
+    expect(() => vault.manifest).toThrow();
+
+    unlinkSync(vaultDir);
+    renameSync(externalVault, vaultDir);
+    const manifest = join(vaultDir, "manifest.yaml");
+    const externalManifest = join(repoPath, "external-manifest.yaml");
+    renameSync(manifest, externalManifest);
+    symlinkSync(externalManifest, manifest);
+    expect(() => vault.reload()).toThrow();
+
+    unlinkSync(manifest);
+    renameSync(externalManifest, manifest);
+    const secrets = join(vaultDir, "secrets");
+    const externalSecrets = join(repoPath, "external-secrets");
+    mkdirSync(externalSecrets);
+    symlinkSync(externalSecrets, secrets, "dir");
+    expect(() => vault.listSecrets()).toThrow();
   });
 });
 

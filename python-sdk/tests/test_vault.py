@@ -114,6 +114,23 @@ class TestVaultInit:
             if old_home:
                 os.environ["HOME"] = old_home
 
+    def test_constructor_rejects_symlinked_vault_root_and_manifest(self, vault_env):
+        vault_dir = vault_env["repo"] / ".agent-vault"
+        external_vault = vault_env["repo"] / "external-vault"
+        vault_dir.rename(external_vault)
+        vault_dir.symlink_to(external_vault, target_is_directory=True)
+        with pytest.raises(VaultNotFoundError):
+            Vault(repo_path=vault_env["repo"], key_path=vault_env["owner_key"], auto_pull=False)
+
+        vault_dir.unlink()
+        external_vault.rename(vault_dir)
+        manifest = vault_dir / "manifest.yaml"
+        external_manifest = vault_env["repo"] / "external-manifest.yaml"
+        manifest.rename(external_manifest)
+        manifest.symlink_to(external_manifest)
+        with pytest.raises(VaultNotFoundError):
+            Vault(repo_path=vault_env["repo"], key_path=vault_env["owner_key"], auto_pull=False)
+
 
 class TestVaultGet:
     def test_get_with_owner_key(self, vault_env):
@@ -276,6 +293,36 @@ class TestVaultGet:
 
 
 class TestVaultList:
+    def test_manifest_refresh_rejects_root_replacement_and_manifest_symlink(self, vault_env):
+        vault = Vault(repo_path=vault_env["repo"], key_path=vault_env["owner_key"], auto_pull=False)
+        vault_dir = vault_env["repo"] / ".agent-vault"
+        external_vault = vault_env["repo"] / "external-vault"
+        vault_dir.rename(external_vault)
+        vault_dir.symlink_to(external_vault, target_is_directory=True)
+        with pytest.raises(VaultNotFoundError):
+            vault.list_agents()
+        with pytest.raises(VaultNotFoundError):
+            _ = vault.manifest
+
+        vault_dir.unlink()
+        external_vault.rename(vault_dir)
+        manifest = vault_dir / "manifest.yaml"
+        external_manifest = vault_env["repo"] / "external-manifest.yaml"
+        manifest.rename(external_manifest)
+        manifest.symlink_to(external_manifest)
+        with pytest.raises(VaultNotFoundError):
+            vault.reload()
+
+    def test_list_secrets_rejects_a_symlinked_secrets_root(self, vault_env):
+        vault_dir = vault_env["repo"] / ".agent-vault"
+        secrets = vault_dir / "secrets"
+        external = vault_env["repo"] / "external-secrets"
+        secrets.rename(external)
+        secrets.symlink_to(external, target_is_directory=True)
+        vault = Vault(repo_path=vault_env["repo"], key_path=vault_env["owner_key"], auto_pull=False)
+        with pytest.raises(VaultNotFoundError):
+            vault.list_secrets()
+
     def test_list_secrets(self, vault_env):
         """Can list secrets with metadata."""
         vault = Vault(

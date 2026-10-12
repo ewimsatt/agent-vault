@@ -5,7 +5,7 @@
  * Decrypted material is never written to disk — it stays in memory only.
  */
 
-import { existsSync, lstatSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
@@ -166,6 +166,27 @@ function findFiles(dir: string, suffix: string): string[] {
   return results;
 }
 
+function ensureSafeVaultRoot(vaultDir: string): void {
+  try {
+    if (!lstatSync(vaultDir).isDirectory()) throw new Error("vault root is not a directory");
+    if (!lstatSync(join(vaultDir, "manifest.yaml")).isFile()) throw new Error("manifest is not a regular file");
+  } catch (error) {
+    throw new VaultNotFoundError(`unsafe vault root: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function ensureSafeSecretsDirectory(secretsDir: string): boolean {
+  try {
+    if (!lstatSync(secretsDir).isDirectory()) {
+      throw new VaultNotFoundError("vault secrets directory must be a real directory");
+    }
+    return true;
+  } catch (error: unknown) {
+    if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
 function isRegularSecretRecord(secretsDir: string, recordPath: string): boolean {
   const parts = relative(secretsDir, recordPath).split(sep);
   let current = secretsDir;
@@ -208,17 +229,13 @@ export class Vault {
     this._vaultDir = join(this._repoPath, ".agent-vault");
     this._autoPull = options.autoPull ?? true;
 
-    if (!existsSync(this._vaultDir) || !statSync(this._vaultDir).isDirectory()) {
-      throw new VaultNotFoundError(
-        `No vault found at ${this._repoPath}. Run 'agent-vault init' first.`,
-      );
-    }
+    ensureSafeVaultRoot(this._vaultDir);
 
     // Load identity (private key)
     this._identity = this._loadIdentity(options);
 
     // Load manifest
-    this._manifest = Manifest.load(join(this._vaultDir, "manifest.yaml"));
+    this._manifest = this._loadManifest();
   }
 
   /**
@@ -264,10 +281,15 @@ export class Vault {
     );
   }
 
+  private _loadManifest(): Manifest {
+    ensureSafeVaultRoot(this._vaultDir);
+    return Manifest.load(join(this._vaultDir, "manifest.yaml"));
+  }
+
   /** Safely fast-forward from ``origin`` and refresh cached policy state. */
   pull(): void {
     safeSync(this._repoPath);
-    this._manifest = Manifest.load(join(this._vaultDir, "manifest.yaml"));
+    this._manifest = this._loadManifest();
   }
 
   /**
@@ -287,7 +309,7 @@ export class Vault {
 
     // Reload policy even for offline callers: autoPull controls Git synchronization,
     // not whether a long-lived client may authorize against stale on-disk policy.
-    this._manifest = Manifest.load(join(this._vaultDir, "manifest.yaml"));
+    this._manifest = this._loadManifest();
 
     // The manifest is the access-policy authority. Refuse a historical or
     // orphaned ciphertext that remains on disk after policy removes its path.
@@ -330,9 +352,9 @@ export class Vault {
     // Metadata is descriptive, but the manifest remains the policy authority.
     // Refresh even for offline callers so a long-lived SDK cannot report a
     // retained record after on-disk policy removes or reassigns it.
-    this._manifest = Manifest.load(join(this._vaultDir, "manifest.yaml"));
+    this._manifest = this._loadManifest();
     const secretsDir = join(this._vaultDir, "secrets");
-    if (!existsSync(secretsDir)) {
+    if (!ensureSafeSecretsDirectory(secretsDir)) {
       return [];
     }
 
@@ -368,12 +390,13 @@ export class Vault {
    * List all agents and their group memberships.
    */
   listAgents(): Array<{ name: string; groups: string[] }> {
-    this._manifest = Manifest.load(join(this._vaultDir, "manifest.yaml"));
+    this._manifest = this._loadManifest();
     return this._manifest.listAgents();
   }
 
   /** Access the parsed manifest. */
   get manifest(): Manifest {
+    ensureSafeVaultRoot(this._vaultDir);
     return this._manifest;
   }
 
@@ -381,6 +404,6 @@ export class Vault {
    * Reload the manifest from disk (e.g. after a pull).
    */
   reload(): void {
-    this._manifest = Manifest.load(join(this._vaultDir, "manifest.yaml"));
+    this._manifest = this._loadManifest();
   }
 }

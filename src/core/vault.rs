@@ -69,9 +69,7 @@ impl Vault {
         let vault = Self {
             paths: paths::VaultPaths::new(root),
         };
-        if !vault.paths.vault_dir().exists() {
-            return Err(VaultError::NotInitialized);
-        }
+        vault.ensure_safe_vault_root()?;
         Ok(vault)
     }
 
@@ -129,13 +127,14 @@ impl Vault {
     /// Add a new agent to the vault.
     pub fn add_agent(&self, name: &str) -> Result<PathBuf, VaultError> {
         identifiers::validate_agent(name)?;
+        self.ensure_safe_vault_root()?;
         let agent_dir = self.paths.agent_dir(name);
         if agent_dir.exists() {
             return Err(VaultError::AgentExists(name.to_string()));
         }
 
         // Load and validate manifest before creating any key material.
-        let mut manifest = Manifest::load(&self.paths.manifest_file())?;
+        let mut manifest = self.load_manifest()?;
         manifest.add_agent(name)?;
 
         // Generate agent keypair
@@ -196,7 +195,7 @@ impl Vault {
         self.ensure_safe_secret_record_path(&enc_path, true)?;
         self.ensure_safe_secret_record_path(&meta_path, true)?;
 
-        let mut manifest = Manifest::load(&self.paths.manifest_file())?;
+        let mut manifest = self.load_manifest()?;
 
         // A secret has exactly one manifest group. Re-setting it with --group moves its
         // policy rather than leaving prior-group members as unintended recipients.
@@ -306,7 +305,7 @@ impl Vault {
         // Decryption must follow the manifest, not merely the presence of an encrypted
         // file. A valid policy can omit a historical/orphaned ciphertext whose recipients
         // still include an old agent key.
-        let manifest = Manifest::load(&self.paths.manifest_file())?;
+        let manifest = self.load_manifest()?;
         if !manifest
             .groups
             .iter()
@@ -351,13 +350,39 @@ impl Vault {
         Ok(false)
     }
 
-    fn ensure_safe_vault_directory(&self) -> Result<(), VaultError> {
+    fn ensure_safe_vault_root(&self) -> Result<(), VaultError> {
         let vault_dir = self.paths.vault_dir();
-        let metadata = std::fs::symlink_metadata(&vault_dir)?;
+        let metadata = match std::fs::symlink_metadata(&vault_dir) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(VaultError::NotInitialized)
+            }
+            Err(error) => return Err(error.into()),
+        };
         if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
             return Err(std::io::Error::other("unsafe vault directory").into());
         }
+        let manifest = self.paths.manifest_file();
+        let metadata = std::fs::symlink_metadata(&manifest)?;
+        if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+            return Err(std::io::Error::other("unsafe vault manifest").into());
+        }
         Ok(())
+    }
+
+    fn load_manifest(&self) -> Result<Manifest, VaultError> {
+        self.ensure_safe_vault_root()?;
+        Manifest::load(&self.paths.manifest_file())
+    }
+
+    fn ensure_safe_secrets_directory(&self) -> Result<bool, VaultError> {
+        let secrets_dir = self.paths.secrets_dir();
+        match std::fs::symlink_metadata(&secrets_dir) {
+            Ok(metadata) if !metadata.file_type().is_symlink() && metadata.file_type().is_dir() => Ok(true),
+            Ok(_) => Err(std::io::Error::other("unsafe vault secrets directory").into()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error.into()),
+        }
     }
 
     /// Refuse to follow symlinks or non-directory ancestors below `.agent-vault/secrets`.
@@ -370,7 +395,7 @@ impl Vault {
         record_path: &Path,
         allow_missing_leaf: bool,
     ) -> Result<(), VaultError> {
-        self.ensure_safe_vault_directory()?;
+        self.ensure_safe_vault_root()?;
         let secrets_dir = self.paths.secrets_dir();
         let relative_path = record_path.strip_prefix(&secrets_dir).map_err(|_| {
             std::io::Error::other("secret record path is outside the vault secrets directory")
@@ -419,7 +444,7 @@ impl Vault {
 
     /// List all agents in the vault.
     pub fn list_agents(&self) -> Result<Vec<(String, Vec<String>)>, VaultError> {
-        let manifest = Manifest::load(&self.paths.manifest_file())?;
+        let manifest = self.load_manifest()?;
         let result = manifest
             .agents
             .iter()
@@ -437,14 +462,13 @@ impl Vault {
             identifiers::validate_group(group)?;
         }
 
-        let secrets_dir = self.paths.secrets_dir();
-        if !secrets_dir.exists() {
-            return Ok(vec![]);
-        }
-
         // Metadata is descriptive, but the manifest remains the policy authority.
         // Do not present an orphaned or reassigned record as a current secret.
-        let manifest = Manifest::load(&self.paths.manifest_file())?;
+        let manifest = self.load_manifest()?;
+        let secrets_dir = self.paths.secrets_dir();
+        if !self.ensure_safe_secrets_directory()? {
+            return Ok(vec![]);
+        }
 
         let mut enc_records = vec![];
         let mut meta_records = vec![];
@@ -564,8 +588,8 @@ impl Vault {
     ) -> Result<Vec<String>, VaultError> {
         identifiers::validate_agent(agent_name)?;
         identifiers::validate_group(group_name)?;
-        self.ensure_safe_vault_directory()?;
-        let mut manifest = Manifest::load(&self.paths.manifest_file())?;
+        self.ensure_safe_vault_root()?;
+        let mut manifest = self.load_manifest()?;
         let secret_paths = manifest.secrets_in_group(group_name);
         manifest.grant(agent_name, group_name)?;
         let prepared = self.prepare_re_encrypted_secrets(&secret_paths, &manifest, None)?;
@@ -595,8 +619,8 @@ impl Vault {
     ) -> Result<Vec<String>, VaultError> {
         identifiers::validate_agent(agent_name)?;
         identifiers::validate_group(group_name)?;
-        self.ensure_safe_vault_directory()?;
-        let mut manifest = Manifest::load(&self.paths.manifest_file())?;
+        self.ensure_safe_vault_root()?;
+        let mut manifest = self.load_manifest()?;
         let secret_paths = manifest.secrets_in_group(group_name);
         manifest.revoke(agent_name, group_name)?;
         let prepared = self.prepare_re_encrypted_secrets(&secret_paths, &manifest, None)?;
@@ -629,7 +653,7 @@ impl Vault {
         manifest: &Manifest,
     ) -> Result<Vec<String>, VaultError> {
         let secrets_dir = self.paths.secrets_dir();
-        if !secrets_dir.exists() {
+        if !self.ensure_safe_secrets_directory()? {
             if manifest.groups.iter().all(|group| group.secrets.is_empty()) {
                 return Ok(vec![]);
             }
@@ -742,8 +766,8 @@ impl Vault {
     /// Returns the list of groups the agent belonged to (for rotation warnings).
     pub fn remove_agent(&self, name: &str) -> Result<Vec<String>, VaultError> {
         identifiers::validate_agent(name)?;
-        self.ensure_safe_vault_directory()?;
-        let mut manifest = Manifest::load(&self.paths.manifest_file())?;
+        self.ensure_safe_vault_root()?;
+        let mut manifest = self.load_manifest()?;
         self.refuse_unmanaged_direct_recipient("remove", name, &manifest)?;
         let groups = manifest
             .agent_groups(name)
@@ -788,14 +812,14 @@ impl Vault {
     /// Returns the path to the new private key.
     pub fn recover_agent(&self, name: &str) -> Result<PathBuf, VaultError> {
         identifiers::validate_agent(name)?;
-        self.ensure_safe_vault_directory()?;
+        self.ensure_safe_vault_root()?;
         // Verify agent exists
         let escrow_path = self.paths.agent_escrow_file(name);
         if !escrow_path.exists() {
             return Err(VaultError::AgentNotFound(name.to_string()));
         }
 
-        let manifest = Manifest::load(&self.paths.manifest_file())?;
+        let manifest = self.load_manifest()?;
         self.refuse_unmanaged_direct_recipient("recover", name, &manifest)?;
         let agent_groups = manifest
             .agent_groups(name)
@@ -846,6 +870,7 @@ impl Vault {
     /// Writes the decrypted key to the specified path.
     pub fn restore_agent(&self, name: &str, to_path: &Path) -> Result<(), VaultError> {
         identifiers::validate_agent(name)?;
+        self.ensure_safe_vault_root()?;
         let escrow_path = self.paths.agent_escrow_file(name);
         if !escrow_path.exists() {
             return Err(VaultError::AgentNotFound(name.to_string()));
@@ -865,7 +890,7 @@ impl Vault {
 
     /// Audit the vault for issues.
     pub fn check(&self) -> Result<Vec<CheckIssue>, VaultError> {
-        let manifest = Manifest::load(&self.paths.manifest_file())?;
+        let manifest = self.load_manifest()?;
         let mut issues = vec![];
 
         // Verify config is valid
@@ -904,7 +929,7 @@ impl Vault {
         let secrets_dir = self.paths.secrets_dir();
         let mut enc_records = vec![];
         let mut meta_records = vec![];
-        if secrets_dir.exists() {
+        if self.ensure_safe_secrets_directory()? {
             discover_secret_records(
                 &secrets_dir,
                 &secrets_dir,
@@ -1098,4 +1123,70 @@ fn whoami() -> String {
     std::env::var("USER")
         .or_else(|_| std::env::var("USERNAME"))
         .unwrap_or_else(|_| "owner".to_string())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+    use tempfile::TempDir;
+
+    fn vault_root() -> TempDir {
+        let temp = TempDir::new().unwrap();
+        let vault_dir = temp.path().join(".agent-vault");
+        std::fs::create_dir(&vault_dir).unwrap();
+        std::fs::write(vault_dir.join("manifest.yaml"), "version: 1\nagents: []\ngroups: []\n").unwrap();
+        temp
+    }
+
+    fn replace_vault_root_with_symlink(temp: &TempDir) {
+        let vault_dir = temp.path().join(".agent-vault");
+        let external = temp.path().join("external-vault");
+        std::fs::rename(&vault_dir, &external).unwrap();
+        symlink(&external, &vault_dir).unwrap();
+    }
+
+    #[test]
+    fn open_rejects_a_symlinked_vault_root() {
+        let temp = vault_root();
+        replace_vault_root_with_symlink(&temp);
+        assert!(Vault::open(temp.path()).is_err());
+    }
+
+    #[test]
+    fn manifest_reads_reject_root_replacement_and_manifest_symlinks() {
+        let temp = vault_root();
+        let vault = Vault::open(temp.path()).unwrap();
+        replace_vault_root_with_symlink(&temp);
+        assert!(vault.list_agents().is_err());
+
+        let temp = vault_root();
+        let vault = Vault::open(temp.path()).unwrap();
+        let manifest = temp.path().join(".agent-vault/manifest.yaml");
+        let external = temp.path().join("external-manifest.yaml");
+        std::fs::rename(&manifest, &external).unwrap();
+        symlink(&external, &manifest).unwrap();
+        assert!(vault.list_agents().is_err());
+    }
+
+    #[test]
+    fn list_and_check_reject_a_symlinked_secrets_root() {
+        let temp = vault_root();
+        let vault = Vault::open(temp.path()).unwrap();
+        let secrets = temp.path().join(".agent-vault/secrets");
+        let external = temp.path().join("external-secrets");
+        std::fs::create_dir(&external).unwrap();
+        symlink(&external, &secrets).unwrap();
+        assert!(vault.list_secrets(None).is_err());
+        assert!(vault.check().is_err());
+    }
+
+    #[test]
+    fn lifecycle_reads_reject_root_replacement_before_key_or_escrow_access() {
+        let temp = vault_root();
+        let vault = Vault::open(temp.path()).unwrap();
+        replace_vault_root_with_symlink(&temp);
+        assert!(vault.add_agent("synthetic-agent").is_err());
+        assert!(vault.restore_agent("synthetic-agent", &temp.path().join("restored.key")).is_err());
+    }
 }

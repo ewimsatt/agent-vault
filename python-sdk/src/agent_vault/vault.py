@@ -123,6 +123,33 @@ def _metadata_paths(directory: Path):
             raise MetadataError(f"cannot inspect vault metadata path {entry.path}: {error}") from error
 
 
+def _ensure_safe_vault_root(vault_dir: Path) -> None:
+    try:
+        vault_mode = vault_dir.lstat().st_mode
+    except OSError as error:
+        raise VaultNotFoundError("vault root is unavailable") from error
+    if not stat.S_ISDIR(vault_mode) or stat.S_ISLNK(vault_mode):
+        raise VaultNotFoundError("vault root must be a real directory")
+    try:
+        manifest_mode = (vault_dir / "manifest.yaml").lstat().st_mode
+    except OSError as error:
+        raise VaultNotFoundError("vault manifest is unavailable") from error
+    if not stat.S_ISREG(manifest_mode) or stat.S_ISLNK(manifest_mode):
+        raise VaultNotFoundError("vault manifest must be a regular file")
+
+
+def _ensure_safe_secrets_directory(secrets_dir: Path) -> bool:
+    try:
+        mode = secrets_dir.lstat().st_mode
+    except FileNotFoundError:
+        return False
+    except OSError as error:
+        raise VaultNotFoundError("vault secrets directory is unavailable") from error
+    if not stat.S_ISDIR(mode) or stat.S_ISLNK(mode):
+        raise VaultNotFoundError("vault secrets directory must be a real directory")
+    return True
+
+
 def _is_regular_secret_record(secrets_dir: Path, record_path: Path) -> bool:
     """Require every vault-owned path component and final ciphertext to be regular."""
     try:
@@ -173,11 +200,7 @@ class Vault:
         self._vault_dir = self._repo_path / ".agent-vault"
         self._auto_pull = auto_pull
 
-        if not self._vault_dir.is_dir():
-            raise VaultNotFoundError(
-                f"No vault found at {self._repo_path}. "
-                "Run 'agent-vault init' first."
-            )
+        _ensure_safe_vault_root(self._vault_dir)
 
         # Load identity (private key)
         if key_str is not None:
@@ -198,12 +221,16 @@ class Vault:
                 )
 
         # Load manifest
-        self._manifest = Manifest.load(self._vault_dir / "manifest.yaml")
+        self._manifest = self._load_manifest()
+
+    def _load_manifest(self) -> Manifest:
+        _ensure_safe_vault_root(self._vault_dir)
+        return Manifest.load(self._vault_dir / "manifest.yaml")
 
     def pull(self) -> None:
         """Safely fast-forward from ``origin`` and refresh cached policy state."""
         _safe_sync(self._repo_path)
-        self._manifest = Manifest.load(self._vault_dir / "manifest.yaml")
+        self._manifest = self._load_manifest()
 
     def get(self, secret_path: str) -> str:
         """Retrieve and decrypt a secret.
@@ -225,7 +252,7 @@ class Vault:
 
         # Reload policy even for offline callers: auto_pull controls Git synchronization,
         # not whether a long-lived client may authorize against stale on-disk policy.
-        self._manifest = Manifest.load(self._vault_dir / "manifest.yaml")
+        self._manifest = self._load_manifest()
 
         # The manifest is the access-policy authority. Refuse a historical or
         # orphaned ciphertext that remains on disk after policy removes its path.
@@ -261,9 +288,9 @@ class Vault:
         # Metadata is descriptive, but the manifest remains the policy authority.
         # Refresh even for offline callers so a long-lived SDK cannot report a
         # retained record after on-disk policy removes or reassigns it.
-        self._manifest = Manifest.load(self._vault_dir / "manifest.yaml")
+        self._manifest = self._load_manifest()
         secrets_dir = self._vault_dir / "secrets"
-        if not secrets_dir.exists():
+        if not _ensure_safe_secrets_directory(secrets_dir):
             return []
 
         results = []
@@ -289,17 +316,18 @@ class Vault:
         Returns:
             List of dicts with "name" and "groups" keys.
         """
-        self._manifest = Manifest.load(self._vault_dir / "manifest.yaml")
+        self._manifest = self._load_manifest()
         return self._manifest.list_agents()
 
     @property
     def manifest(self) -> Manifest:
         """Access the parsed manifest."""
+        _ensure_safe_vault_root(self._vault_dir)
         return self._manifest
 
     def reload(self) -> None:
         """Reload the manifest from disk (e.g. after a pull)."""
-        self._manifest = Manifest.load(self._vault_dir / "manifest.yaml")
+        self._manifest = self._load_manifest()
 
     def __enter__(self) -> "Vault":
         return self
