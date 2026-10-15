@@ -128,14 +128,21 @@ impl Vault {
     pub fn add_agent(&self, name: &str) -> Result<PathBuf, VaultError> {
         identifiers::validate_agent(name)?;
         self.ensure_safe_vault_root()?;
-        let agent_dir = self.paths.agent_dir(name);
-        if agent_dir.exists() {
-            return Err(VaultError::AgentExists(name.to_string()));
-        }
-
         // Load and validate manifest before creating any key material.
         let mut manifest = self.load_manifest()?;
         manifest.add_agent(name)?;
+
+        // The agents directory is vault-owned policy/key material. Refuse a pre-existing
+        // symlink or non-directory before creating either repository or local key files.
+        self.ensure_safe_agents_directory()?;
+        let agent_dir = self.paths.agent_dir(name);
+        match std::fs::symlink_metadata(&agent_dir) {
+            Ok(_) => return Err(VaultError::AgentExists(name.to_string())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        std::fs::create_dir(&agent_dir)?;
+        self.ensure_safe_agent_directory(&agent_dir)?;
 
         // Generate agent keypair
         let (agent_secret, agent_public) = crypto::generate_keypair();
@@ -145,11 +152,12 @@ impl Vault {
         keys::save_private_key(&agent_key_path, &agent_secret)?;
 
         // Save agent public key to repo
-        std::fs::create_dir_all(&agent_dir)?;
+        self.ensure_safe_agent_directory(&agent_dir)?;
         keys::save_public_key(&self.paths.agent_pub_file(name), &agent_public)?;
 
         // Create escrow
         let owner_pub = keys::load_public_key(&self.paths.owner_pub_file())?;
+        self.ensure_safe_agent_directory(&agent_dir)?;
         keys::create_escrow(
             &agent_secret,
             &owner_pub,
@@ -383,6 +391,31 @@ impl Vault {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
             Err(error) => Err(error.into()),
         }
+    }
+
+    fn ensure_safe_agents_directory(&self) -> Result<(), VaultError> {
+        self.ensure_safe_vault_root()?;
+        let agents_dir = self.paths.agents_dir();
+        match std::fs::symlink_metadata(&agents_dir) {
+            Ok(metadata) if !metadata.file_type().is_symlink() && metadata.file_type().is_dir() => {
+                Ok(())
+            }
+            Ok(_) => Err(std::io::Error::other("unsafe vault agents directory").into()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::create_dir(&agents_dir)?;
+                self.ensure_safe_agents_directory()
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn ensure_safe_agent_directory(&self, agent_dir: &Path) -> Result<(), VaultError> {
+        self.ensure_safe_agents_directory()?;
+        let metadata = std::fs::symlink_metadata(agent_dir)?;
+        if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
+            return Err(std::io::Error::other("unsafe vault agent directory").into());
+        }
+        Ok(())
     }
 
     /// Refuse to follow symlinks or non-directory ancestors below `.agent-vault/secrets`.

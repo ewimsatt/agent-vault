@@ -1,6 +1,8 @@
 #![allow(deprecated)]
 
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::symlink;
 use std::sync::Mutex;
 
 use assert_cmd::Command;
@@ -88,6 +90,47 @@ fn test_cli_add_agent() {
         .success()
         .stderr(predicate::str::contains("Agent 'my-bot' created"))
         .stderr(predicate::str::contains("agent-vault grant"));
+}
+
+#[cfg(unix)]
+#[test]
+fn test_cli_add_agent_refuses_symlinked_agents_directory_before_writing_keys() {
+    let _lock = HOME_LOCK.lock().unwrap();
+    let (tmp, mut cmd) = setup();
+    cmd.arg("init").assert().success();
+
+    let agents_dir = tmp.path().join(".agent-vault/agents");
+    let external = TempDir::new().unwrap();
+    fs::remove_dir(&agents_dir).unwrap();
+    symlink(external.path(), &agents_dir).unwrap();
+
+    let manifest = tmp.path().join(".agent-vault/manifest.yaml");
+    let manifest_before = fs::read(&manifest).unwrap();
+    let head_before = git2::Repository::open(tmp.path())
+        .unwrap()
+        .head()
+        .unwrap()
+        .target();
+    let local_key = tmp
+        .path()
+        .join("fakehome/.agent-vault/agents/synthetic-agent.key");
+
+    cmd_in(&tmp)
+        .args(["add-agent", "synthetic-agent"])
+        .assert()
+        .failure();
+
+    assert!(!external.path().join("synthetic-agent").exists());
+    assert!(!local_key.exists());
+    assert_eq!(fs::read(&manifest).unwrap(), manifest_before);
+    assert_eq!(
+        git2::Repository::open(tmp.path())
+            .unwrap()
+            .head()
+            .unwrap()
+            .target(),
+        head_before
+    );
 }
 
 #[test]
