@@ -735,6 +735,38 @@ fn test_recover_agent_new_keypair() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn test_recover_agent_refuses_symlinked_agents_root_before_key_writes() {
+    use std::os::unix::fs::symlink;
+
+    let _lock = HOME_LOCK.lock().unwrap();
+    let (_tmp, root) = setup_git_repo();
+    let vault = Vault::init(&root).unwrap();
+    let agent_key = vault.add_agent("bot1").unwrap();
+    let agents_dir = root.join(".agent-vault/agents");
+    let original_public = agents_dir.join("bot1/public.key");
+    let original_escrow = agents_dir.join("bot1/private.key.escrow");
+    let external_agents = root.join("external-agents");
+    let before_key = fs::read(&agent_key).unwrap();
+    let before_public = fs::read(&original_public).unwrap();
+    let before_escrow = fs::read(&original_escrow).unwrap();
+    let manifest = root.join(".agent-vault/manifest.yaml");
+    let before_manifest = fs::read(&manifest).unwrap();
+    let repo = git2::Repository::open(&root).unwrap();
+    let before_head = repo.head().unwrap().target().unwrap();
+
+    fs::rename(&agents_dir, &external_agents).unwrap();
+    symlink(&external_agents, &agents_dir).unwrap();
+
+    assert!(vault.recover_agent("bot1").is_err());
+    assert_eq!(fs::read(&agent_key).unwrap(), before_key);
+    assert_eq!(fs::read(external_agents.join("bot1/public.key")).unwrap(), before_public);
+    assert_eq!(fs::read(external_agents.join("bot1/private.key.escrow")).unwrap(), before_escrow);
+    assert_eq!(fs::read(&manifest).unwrap(), before_manifest);
+    assert_eq!(repo.head().unwrap().target().unwrap(), before_head);
+}
+
 #[test]
 fn test_recover_preflight_failure_leaves_key_and_earlier_records_unchanged() {
     let _lock = HOME_LOCK.lock().unwrap();

@@ -418,6 +418,35 @@ impl Vault {
         Ok(())
     }
 
+    /// Require an existing repository-owned agent key record without following symlinks.
+    fn ensure_safe_agent_record_path(
+        &self,
+        agent_name: &str,
+        record_path: &Path,
+        allow_missing_leaf: bool,
+    ) -> Result<(), VaultError> {
+        self.ensure_safe_vault_root()?;
+        let agents_dir = self.paths.agents_dir();
+        let agents_metadata = std::fs::symlink_metadata(&agents_dir)?;
+        if agents_metadata.file_type().is_symlink() || !agents_metadata.file_type().is_dir() {
+            return Err(std::io::Error::other("unsafe vault agents directory").into());
+        }
+        let agent_dir = self.paths.agent_dir(agent_name);
+        let agent_metadata = std::fs::symlink_metadata(&agent_dir)?;
+        if agent_metadata.file_type().is_symlink() || !agent_metadata.file_type().is_dir() {
+            return Err(std::io::Error::other("unsafe vault agent directory").into());
+        }
+        if record_path.parent() != Some(agent_dir.as_path()) {
+            return Err(std::io::Error::other("agent key path is outside its agent directory").into());
+        }
+        match std::fs::symlink_metadata(record_path) {
+            Ok(metadata) if metadata.file_type().is_file() => Ok(()),
+            Ok(_) => Err(std::io::Error::other("unsafe vault agent key record").into()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && allow_missing_leaf => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     /// Refuse to follow symlinks or non-directory ancestors below `.agent-vault/secrets`.
     ///
     /// This establishes confinement for a stable checkout. It is deliberately rechecked before
@@ -846,17 +875,14 @@ impl Vault {
     pub fn recover_agent(&self, name: &str) -> Result<PathBuf, VaultError> {
         identifiers::validate_agent(name)?;
         self.ensure_safe_vault_root()?;
-        // Verify agent exists
-        let escrow_path = self.paths.agent_escrow_file(name);
-        if !escrow_path.exists() {
-            return Err(VaultError::AgentNotFound(name.to_string()));
-        }
-
         let manifest = self.load_manifest()?;
-        self.refuse_unmanaged_direct_recipient("recover", name, &manifest)?;
         let agent_groups = manifest
             .agent_groups(name)
             .ok_or_else(|| VaultError::AgentNotFound(name.to_string()))?;
+        let escrow_path = self.paths.agent_escrow_file(name);
+        self.ensure_safe_agent_record_path(name, &escrow_path, false)?;
+        self.ensure_safe_agent_record_path(name, &self.paths.agent_pub_file(name), true)?;
+        self.refuse_unmanaged_direct_recipient("recover", name, &manifest)?;
 
         // Generate replacement key material and prepare every output before any lifecycle write.
         let (new_secret, new_public) = crypto::generate_keypair();
